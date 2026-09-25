@@ -1,5 +1,6 @@
 package com.koljs.controller
 
+import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -21,6 +22,29 @@ data class RunInfo(
 )
 
 class ApiException(message: String) : Exception(message)
+
+/**
+ * 云桌面同步过来的 AgentDock 连接信息（读取自私有仓库的状态文件）。
+ * 其中 bearerToken / oauthPassword / prompt 属敏感内容，仅在本机展示与剪贴板复制。
+ */
+data class AgentDockLink(
+    val updatedAt: String?,
+    val publicMcpUrl: String?,
+    val localMcpUrl: String?,
+    val bearerToken: String?,
+    val oauthPassword: String?,
+    val version: String?,
+    val health: String?,
+    val tunnelMode: String?,
+    val message: String?,
+    val installed: Boolean,
+    val coreAlive: Boolean,
+    val healthzOk: Boolean,
+    val easytierIp: String?,
+    val socks5: String?,
+    val rdpUser: String?,
+    val prompt: String?
+)
 
 /**
  * GitHub Actions REST API 封装
@@ -116,4 +140,61 @@ class GitHubApi(
             }
         }
     }
+
+    /**
+     * 读取云桌面写入私有仓库的 AgentDock 连接信息与 AI 助手提示词。
+     * 状态文件尚未生成（HTTP 404）时返回 null，表示当前会话还没同步过。
+     */
+    suspend fun fetchAgentDockLink(
+        stateOwner: String,
+        stateRepo: String,
+        statePath: String
+    ): AgentDockLink? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("https://api.github.com/repos/$stateOwner/$stateRepo/contents/$statePath")
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "application/vnd.github+json")
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            if (resp.code == 404) return@withContext null
+            val text = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) throw ApiException(failMessage(resp.code, text))
+
+            val encoded = JSONObject(text).optString("content", "")
+            val decoded = try {
+                val compact = encoded.replace("\n", "").replace("\r", "")
+                String(Base64.decode(compact, Base64.DEFAULT), Charsets.UTF_8)
+            } catch (e: Exception) {
+                throw ApiException("状态文件解码失败：${e.message}")
+            }
+
+            val root = JSONObject(decoded)
+            val agentDock = root.optJSONObject("agentdock")
+            val desktop = root.optJSONObject("cloud_desktop")
+
+            AgentDockLink(
+                updatedAt = root.optText("updated_at"),
+                publicMcpUrl = agentDock?.optText("public_mcp_url"),
+                localMcpUrl = agentDock?.optText("local_mcp_url"),
+                bearerToken = agentDock?.optText("bearer_token"),
+                oauthPassword = agentDock?.optText("oauth_password"),
+                version = agentDock?.optText("version"),
+                health = agentDock?.optText("health"),
+                tunnelMode = agentDock?.optText("tunnel_mode"),
+                message = agentDock?.optText("message"),
+                installed = agentDock?.optBoolean("installed", false) ?: false,
+                coreAlive = agentDock?.optBoolean("core_alive", false) ?: false,
+                healthzOk = agentDock?.optBoolean("healthz_ok", false) ?: false,
+                easytierIp = desktop?.optText("easytier_ip"),
+                socks5 = desktop?.optText("socks5"),
+                rdpUser = desktop?.optText("rdp_user"),
+                prompt = root.optText("prompt")
+            )
+        }
+    }
 }
+
+private fun JSONObject.optText(key: String): String? =
+    if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() }

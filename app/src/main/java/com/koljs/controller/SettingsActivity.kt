@@ -15,6 +15,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var etRepo: EditText
     private lateinit var etWorkflow: EditText
     private lateinit var etRdpPassword: EditText
+    private lateinit var etStateRepo: EditText
+    private lateinit var etStatePath: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,12 +28,16 @@ class SettingsActivity : AppCompatActivity() {
         etRepo = findViewById(R.id.etRepo)
         etWorkflow = findViewById(R.id.etWorkflow)
         etRdpPassword = findViewById(R.id.etRdpPassword)
+        etStateRepo = findViewById(R.id.etStateRepo)
+        etStatePath = findViewById(R.id.etStatePath)
 
         etToken.setText(prefs.token)
         etOwner.setText(prefs.owner)
         etRepo.setText(prefs.repo)
         etWorkflow.setText(prefs.workflowFile)
         etRdpPassword.setText(prefs.rdpPassword)
+        etStateRepo.setText("${prefs.stateOwner}/${prefs.stateRepo}")
+        etStatePath.setText(prefs.statePath)
 
         findViewById<MaterialButton>(R.id.btnSave).setOnClickListener {
             prefs.token = etToken.text.toString().trim()
@@ -39,6 +45,13 @@ class SettingsActivity : AppCompatActivity() {
             prefs.repo = etRepo.text.toString().trim().ifBlank { "my-cloud-desktop" }
             prefs.workflowFile = etWorkflow.text.toString().trim().ifBlank { "windows-rdp-easytier.yml" }
             prefs.rdpPassword = etRdpPassword.text.toString()
+
+            val stateFull = etStateRepo.text.toString().trim().ifBlank { "dtkluo/agentdock-v2" }
+            val parts = stateFull.split("/")
+            prefs.stateOwner = parts.getOrNull(0)?.trim()?.ifBlank { "dtkluo" } ?: "dtkluo"
+            prefs.stateRepo = parts.getOrNull(1)?.trim()?.ifBlank { "agentdock-v2" } ?: "agentdock-v2"
+            prefs.statePath = etStatePath.text.toString().trim().ifBlank { "runtime/cloud-desktop.json" }
+
             Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
             finish()
         }
