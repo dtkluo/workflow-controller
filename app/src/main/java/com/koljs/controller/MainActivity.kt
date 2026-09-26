@@ -46,6 +46,12 @@ class MainActivity : AppCompatActivity() {
     private var agentDockLink: AgentDockLink? = null
     private var lastLinkFetchAt = 0L
 
+    /**
+     * 防重入标志。请求内部会做退避重试，单次耗时可能超过 30 秒轮询间隔，
+     * 不加该标志会导致请求层层堆积、越积越多。
+     */
+    private var refreshing = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -147,19 +153,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshOnce() {
+        if (refreshing) return
         val api = apiNow() ?: run {
             tvStatus.text = "未配置 Token，请点击下方设置"
             return
         }
+        refreshing = true
         lifecycleScope.launch {
             try {
-                currentRun = api.latestRun()
-            } catch (e: Exception) {
-                tvStatus.text = "获取状态失败：${e.message}"
-                return@launch
+                try {
+                    currentRun = api.latestRun()
+                } catch (e: Exception) {
+                    tvStatus.text = "获取状态失败：${e.message}"
+                    return@launch
+                }
+                updateUi()
+                refreshLink(force = false)
+            } finally {
+                refreshing = false
             }
-            updateUi()
-            refreshLink(force = false)
         }
     }
 
@@ -178,9 +190,14 @@ class MainActivity : AppCompatActivity() {
                 prefs.lastHours = hours
                 Toast.makeText(this@MainActivity, "已触发启动（$hours 小时），约 3-5 分钟后可连接", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "启动失败：${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    "启动失败：${e.message}\n若提示网络超时，请稍后下拉刷新确认是否已触发（避免重复启动）",
+                    Toast.LENGTH_LONG
+                ).show()
             } finally {
                 btnStart.text = "启动云桌面"
+                // 即便上面因超时抛错，请求也可能实际已送达，刷新一次以确认真实状态
                 refreshOnce()
             }
         }
