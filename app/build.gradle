@@ -17,10 +17,24 @@ android {
 
     signingConfigs {
         release {
-            storeFile rootProject.file("keystore.jks")
-            storePassword "android"
-            keyAlias "app"
-            keyPassword "android"
+            // 签名材料一律从环境变量读取（CI 由 Actions secret 注入），仓库里不保存密钥。
+            // 过去这里是 storeFile "keystore.jks" + 明文口令，等于把签名密钥公开出去 ——
+            // 拿到它就能签出同签名同包名的 APK，伪装成升级包覆盖安装。
+            // 本地构建前先导出：
+            //   ANDROID_KEYSTORE_PATH / ANDROID_KEYSTORE_PASSWORD /
+            //   ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+            def ksPath  = System.getenv("ANDROID_KEYSTORE_PATH")
+            def ksPass  = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            def ksAlias = System.getenv("ANDROID_KEY_ALIAS")
+            def keyPass = System.getenv("ANDROID_KEY_PASSWORD")
+            if (ksPath != null && file(ksPath).exists()) {
+                storeFile file(ksPath)
+                storePassword ksPass
+                keyAlias ksAlias
+                keyPassword keyPass
+            } else {
+                logger.lifecycle("未提供 ANDROID_KEYSTORE_PATH：release 不签名（仅供本地检查）")
+            }
         }
     }
 
