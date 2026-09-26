@@ -5,3 +5,8 @@ local.properties
 *.iml
 captures/
 .DS_Store
+
+# 签名密钥绝不入库（经 Actions secret 注入）
+*.jks
+*.keystore
+*.p12
