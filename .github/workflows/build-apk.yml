@@ -24,20 +24,41 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: 确保签名密钥存在（首次生成并提交，保证后续 APK 可升级安装）
+      # 密钥只存在于 Actions secret 中，运行时还原到临时目录，绝不写入工作区/仓库。
+      # 之前这里是「不存在就生成一个并 git push」—— 那等于每次都可能把签名密钥提交到
+      # 公开仓库，是必须铲掉的机制。
+      - name: 注入签名密钥（来自 Secret，不落仓库）
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          if [ ! -f keystore.jks ]; then
-            keytool -genkeypair -keystore keystore.jks -storepass android -keypass android \
-              -alias app -dname "CN=Workflow Controller" -keyalg RSA -keysize 2048 -validity 10000
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add keystore.jks
-            git commit -m "chore: add release signing keystore"
-            git push
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::缺少 secret ANDROID_KEYSTORE_BASE64，无法签名发布"
+            exit 1
           fi
+          KS="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          chmod 600 "$KS"
+          echo "ANDROID_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "密钥库已还原：$(stat -c%s "$KS") 字节（位于 RUNNER_TEMP，不随工作区留存）"
 
       - name: 编译 Release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
+
+      # 防止「静默产出未签名包」：构建脚本一旦拿不到密钥就会退化为不签名，
+      # 这种 APK 装不上，必须在发布前就失败。
+      - name: 校验签名
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          ls -l "$APK"
+          APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner -type f | sort | tail -1)
+          echo "apksigner: $APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
