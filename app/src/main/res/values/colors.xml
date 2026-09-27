@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      AgentDock 状态行的语义色（浅色模式）。
+
+      为什么不用代码里的硬编码色：应用主题是 Theme.Material3.DayNight.NoActionBar，
+      会跟随系统深色模式；深色值压在深底上对比度不足，必须由 values-night 提供高亮度变体。
+      语义：ok=可连接 / action=需要你动手 / info=进行中 / bad=故障 / muted=无会话。
+    -->
+    <color name="status_ok">#2E7D32</color>
+    <color name="status_action">#E65100</color>
+    <color name="status_info">#1565C0</color>
+    <color name="status_bad">#C62828</color>
+    <color name="status_muted">#757575</color>
+</resources>

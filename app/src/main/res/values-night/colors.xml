@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AgentDock 状态行的语义色（深色模式）：改用各色系的高亮度变体，保证深底上可读 -->
+    <color name="status_ok">#81C784</color>
+    <color name="status_action">#FFB74D</color>
+    <color name="status_info">#64B5F6</color>
+    <color name="status_bad">#EF9A9A</color>
+    <color name="status_muted">#BDBDBD</color>
+</resources>

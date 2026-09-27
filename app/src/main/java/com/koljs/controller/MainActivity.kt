@@ -6,7 +6,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.TextView
 import android.widget.Toast
+import androidx.annotation.ColorRes
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.ChipGroup
@@ -37,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chipGroup: ChipGroup
     private lateinit var tvLinkTitle: TextView
     private lateinit var tvLinkInfo: TextView
+    private lateinit var tvLinkState: TextView
     private lateinit var tvLinkMcp: TextView
     private lateinit var tvLinkToken: TextView
     private lateinit var btnCopyPrompt: MaterialButton
@@ -89,6 +92,7 @@ class MainActivity : AppCompatActivity() {
         chipGroup = findViewById(R.id.chipGroup)
         tvLinkTitle = findViewById(R.id.tvLinkTitle)
         tvLinkInfo = findViewById(R.id.tvLinkInfo)
+        tvLinkState = findViewById(R.id.tvLinkState)
         tvLinkMcp = findViewById(R.id.tvLinkMcp)
         tvLinkToken = findViewById(R.id.tvLinkToken)
         btnCopyPrompt = findViewById(R.id.btnCopyPrompt)
@@ -168,6 +172,9 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
                 updateUi()
+                // 状态行依赖 currentRun，必须在此同步刷新：refreshLink 有 2 分钟节流，
+                // 若只靠它回调，用户点「启动云桌面」后状态行会一直停在旧值。
+                updateLinkUi()
                 refreshLink(force = false)
             } finally {
                 refreshing = false
@@ -282,27 +289,108 @@ class MainActivity : AppCompatActivity() {
     private fun updateLinkUi() {
         val link = agentDockLink
         if (link == null) {
+            val run = currentRun
+            val pending = run != null && run.status in PENDING_STATUSES
+            val running = run != null && run.status == "in_progress"
             tvLinkTitle.text = "AI 助手连接提示词"
+            tvLinkState.text = when {
+                pending -> "● 正在分配虚拟机…"
+                running -> "● 云桌面已启动，等待同步连接信息…"
+                else -> ""
+            }
+            if (pending || running) {
+                tvLinkState.setTextColor(ContextCompat.getColor(this, R.color.status_info))
+            }
             tvLinkInfo.text = "尚未同步：启动云桌面后会自动安装 AgentDock 并写入连接信息"
             tvLinkMcp.text = "MCP 地址：—"
             tvLinkToken.text = "Bearer Token：—"
             btnCopyPrompt.isEnabled = false
             return
         }
-        val coreState = if (link.coreAlive || link.healthzOk) "运行中" else "未运行"
+
+        val state = resolveLinkState(link)
         tvLinkTitle.text = "AI 助手连接提示词（可一键复制）"
-        tvLinkInfo.text = buildString {
-            append("同步于 ").append(formatUpdatedAt(link.updatedAt))
-            append("｜核心 ").append(coreState)
-            append("｜隧道 ").append(link.tunnelMode ?: "—")
-            append("｜版本 ").append(link.version ?: "—")
-            if (!link.installed) {
-                append("｜安装异常：").append(link.message ?: "未知原因")
-            }
-        }
+        tvLinkState.text = stateHeadline(state, link)
+        tvLinkState.setTextColor(ContextCompat.getColor(this, stateColor(state)))
+        tvLinkInfo.text = stateDetail(state, link)
         tvLinkMcp.text = "MCP 地址：" + (link.publicMcpUrl ?: "未就绪")
         tvLinkToken.text = "Bearer Token：" + maskSecret(link.bearerToken)
         btnCopyPrompt.isEnabled = !link.prompt.isNullOrBlank()
+    }
+
+    /**
+     * 云桌面 / AgentDock 的对外可见状态。
+     *
+     * 本机是「随登录型」形态：云桌面开机后 AgentDock 只是写好参数、注册了「登录即装」的
+     * 计划任务，真正启动要等 rdpadmin 完成一次交互式 RDP 登录 —— 这个阶段在状态文件里
+     * 是 `health = pending-logon`。不把它显式展示出来，用户只会看到「核心未运行」，
+     * 既不知道原因也不知道该做什么。
+     */
+    private enum class LinkState { QUEUED, PENDING_LOGON, READY, FAILED, STALE, UNKNOWN }
+
+    /**
+     * 归一状态。
+     *
+     * **必须先确认当前会话真的在跑**：状态文件是上次写入时的快照，云桌面关机后它不会
+     * 自动清空，直接采信会出现「手机显示已就绪、机器其实早就关了」这种最误导人的情形。
+     */
+    private fun resolveLinkState(link: AgentDockLink): LinkState {
+        val run = currentRun ?: return LinkState.STALE
+        return when {
+            run.status in PENDING_STATUSES -> LinkState.QUEUED
+            run.status == "in_progress" -> when {
+                link.health == "healthy" -> LinkState.READY
+                link.health == "pending-logon" -> LinkState.PENDING_LOGON
+                !link.installed -> LinkState.FAILED
+                else -> LinkState.UNKNOWN
+            }
+            else -> LinkState.STALE
+        }
+    }
+
+    /** 首行大字：现在到底能不能连，或者下一步该做什么 */
+    private fun stateHeadline(state: LinkState, link: AgentDockLink): String = when (state) {
+        LinkState.READY -> "● 已就绪，可以直接连接 AI 助手"
+        LinkState.PENDING_LOGON -> "● 待登录：请 RDP 连接 ${link.rdpUser ?: "rdpadmin"} 一次"
+        LinkState.QUEUED -> "● 正在分配虚拟机…"
+        LinkState.FAILED -> "● 安装异常，AgentDock 未启动"
+        LinkState.STALE -> "● 云桌面未在运行"
+        LinkState.UNKNOWN -> "● 状态未就绪"
+    }
+
+    /** 次行小字：原因与后续动作 */
+    private fun stateDetail(state: LinkState, link: AgentDockLink): String = when (state) {
+        LinkState.READY ->
+            "同步于 ${formatUpdatedAt(link.updatedAt)}｜版本 ${link.version ?: "—"}" +
+                "｜隧道 ${link.tunnelMode ?: "—"}"
+        LinkState.PENDING_LOGON ->
+            "AgentDock 已在云端就位，只差完成一次登录。RDP 连上后约 1 分钟自动启动，" +
+                "此后可立即断开，会话会保留。"
+        LinkState.QUEUED ->
+            "虚拟机尚未分配（约 3-5 分钟）。分配后还需 RDP 登录一次。"
+        LinkState.FAILED ->
+            "错误码 ${link.errorCode ?: "—"}：${link.message ?: "未知原因"}"
+        LinkState.STALE ->
+            "以下为上次会话的残留记录（同步于 ${formatUpdatedAt(link.updatedAt)}）。" +
+                "点「启动云桌面」开始新会话。"
+        LinkState.UNKNOWN ->
+            "同步于 ${formatUpdatedAt(link.updatedAt)}｜health=${link.health ?: "—"}"
+    }
+
+    /**
+     * 状态色资源 id：绿=可用、橙=需要你动手、蓝=进行中、红=故障、灰=无会话。
+     *
+     * 色值分浅色 / 深色两套（`values/colors.xml` 与 `values-night/colors.xml`）——
+     * 主题是 `Theme.Material3.DayNight.NoActionBar` 会跟随系统深色模式，
+     * 深色值压在深底上对比度不足，必须换成高亮度变体。
+     */
+    @ColorRes
+    private fun stateColor(state: LinkState): Int = when (state) {
+        LinkState.READY -> R.color.status_ok
+        LinkState.PENDING_LOGON -> R.color.status_action
+        LinkState.QUEUED -> R.color.status_info
+        LinkState.FAILED -> R.color.status_bad
+        LinkState.STALE, LinkState.UNKNOWN -> R.color.status_muted
     }
 
     private fun formatUpdatedAt(iso: String?): String {
@@ -327,6 +415,9 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val LINK_FETCH_INTERVAL_MS = 120_000L
+
+        /** workflow_dispatch 后、VM 真正跑起来之前的过渡态（GitHub 会先后给出其中若干个） */
+        private val PENDING_STATUSES = setOf("requested", "waiting", "pending", "queued")
     }
 
     // ---------- 剪贴板 ----------

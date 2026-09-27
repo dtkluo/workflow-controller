@@ -219,6 +219,15 @@
                     android:textSize="14sp"
                     android:textStyle="bold" />
 
+                <!-- 状态行：文字与颜色由 MainActivity 按 agentdock.health 动态设置 -->
+                <TextView
+                    android:id="@+id/tvLinkState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
                 <TextView
                     android:id="@+id/tvLinkInfo"
                     android:layout_width="match_parent"
