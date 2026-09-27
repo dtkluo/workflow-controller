@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
         pollJob = lifecycleScope.launch {
             while (isActive) {
                 refreshOnce()
-                delay(30_000)
+                delay(POLL_INTERVAL_MS)
             }
         }
     }
@@ -172,7 +172,7 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
                 updateUi()
-                // 状态行依赖 currentRun，必须在此同步刷新：refreshLink 有 2 分钟节流，
+                // 状态行依赖 currentRun，必须在此同步刷新：refreshLink 可能因节流被跳过，
                 // 若只靠它回调，用户点「启动云桌面」后状态行会一直停在旧值。
                 updateLinkUi()
                 refreshLink(force = false)
@@ -265,8 +265,12 @@ class MainActivity : AppCompatActivity() {
     // ---------- AgentDock 连接提示词 ----------
 
     /**
-     * 读取状态文件。宿主轮询间隔为 30 秒，这里按 2 分钟节流，
-     * 避免对 GitHub API 造成不必要的调用。
+     * 读取状态文件。
+     *
+     * 节流周期略小于轮询周期，使**每一轮都能拉到最新值**。状态文件由云桌面侧每 1 分钟
+     * 同步一次；这里若再压 2 分钟，登录后在手机上看到「已就绪」最长要等 3 分钟。
+     * 现在的节奏是「云桌面 ≤60s ＋ 本机 ≤30s」，端到端滞后 ≤90 秒。
+     * 调用量约 240 次/小时（带 Token 限额 5000/小时），可忽略。
      */
     private fun refreshLink(force: Boolean) {
         if (prefs.token.isBlank()) return
@@ -414,7 +418,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val LINK_FETCH_INTERVAL_MS = 120_000L
+        /** 主状态轮询周期。仅前台生效：onPause 会取消 pollJob，后台不会请求。 */
+        private const val POLL_INTERVAL_MS = 30_000L
+
+        /** 连接信息拉取节流。必须小于 [POLL_INTERVAL_MS]，否则会出现等待空窗。 */
+        private const val LINK_FETCH_INTERVAL_MS = 25_000L
 
         /** workflow_dispatch 后、VM 真正跑起来之前的过渡态（GitHub 会先后给出其中若干个） */
         private val PENDING_STATUSES = setOf("requested", "waiting", "pending", "queued")
