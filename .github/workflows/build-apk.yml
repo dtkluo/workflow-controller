@@ -34,6 +34,24 @@ jobs:
       - name: 运行单元测试
         run: gradle :app:testDebugUnitTest --no-daemon
 
+      # 光看 gradle 退出码是不够的：测试源一旦被误删/路径写错，testDebugUnitTest 会以
+      # NO-SOURCE 静默通过，看起来「全绿」实则一条都没跑。这里强制校验结果文件存在，
+      # 并把用例数打印出来，让「跑了多少条」在日志里可核对。
+      - name: 校验单元测试确实执行
+        run: |
+          set -euo pipefail
+          DIR=app/build/test-results/testDebugUnitTest
+          ls -la "$DIR"
+          echo "--- 各测试类统计 ---"
+          grep -ho 'tests="[0-9]*"'        "$DIR"/*.xml | sort | uniq -c
+          grep -ho 'failures="[0-9]*"'     "$DIR"/*.xml | sort | uniq -c
+          grep -ho 'errors="[0-9]*"'       "$DIR"/*.xml | sort | uniq -c
+          grep -ho 'skipped="[0-9]*"'      "$DIR"/*.xml | sort | uniq -c
+          if [ ! -f "$DIR/TEST-com.koljs.controller.SessionStateTest.xml" ]; then
+            echo "::error::SessionStateTest 结果文件缺失，说明测试根本没执行"
+            exit 1
+          fi
+
       # 密钥只存在于 Actions secret 中，运行时还原到临时目录，绝不写入工作区/仓库。
       # 之前这里是「不存在就生成一个并 git push」—— 那等于每次都可能把签名密钥提交到
       # 公开仓库，是必须铲掉的机制。
