@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -24,9 +25,29 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private var currentRun: RunInfo? = null
+
+    /** 30 秒轮询协程 */
     private var pollJob: Job? = null
 
+    /**
+     * 正在飞行中的 [refreshOnce] 协程。
+     *
+     * 留住句柄是为了「用户点了立即刷新」时能掐掉还堵在退避重试里的旧请求，
+     * 而不是让新请求被 [refreshing] 静默吞掉（用户表现为「点了毫无反应」）。
+     */
+    private var refreshJob: Job? = null
+
+    /** 「启动云桌面」的互斥 Job；活跃期间禁止重复触发 */
+    private var startActionJob: Job? = null
+
+    /** 「停止云桌面」的互斥 Job（含取消确认巡检）；活跃期间禁止重入，否则同一 run 会被反复取消 */
+    private var stopActionJob: Job? = null
+
+    /** 正在读取云桌面连接信息的协程 */
+    private var linkJob: Job? = null
+
     private lateinit var tvStatus: TextView
+    private lateinit var tvLastUpdate: TextView
     private lateinit var tvElapsed: TextView
     private lateinit var tvRemaining: TextView
     private lateinit var tvIp: TextView
@@ -50,10 +71,36 @@ class MainActivity : AppCompatActivity() {
     private var lastLinkFetchAt = 0L
 
     /**
+     * 上一次**成功**取到状态的时间戳，0 表示从未成功。
+     *
+     * 它是 tvLastUpdate 写文案的依据：成功覆盖成「最后更新 HH:mm:ss」，
+     * 失败则保留它作为「上次更新」的参照，好让用户知道界面上的数据有多旧。
+     */
+    private var lastStatusOkAt = 0L
+
+    /** 「HH:mm:ss」格式化器。仅在主线程调用（SimpleDateFormat 非线程安全） */
+    private val clockFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+    /**
+     * 覆盖状态行的临时文案（优先于 [statusText]）。
+     *
+     * 取消确认巡检期间 30 秒轮询仍在跑、会不断调用 [updateUi]，没有它的话
+     * 用户看到的依旧是「运行中」，完全不知道刚才那一下点击到底有没有受理。
+     */
+    private var statusOverride: String? = null
+
+    /**
      * 防重入标志。请求内部会做退避重试，单次耗时可能超过 30 秒轮询间隔，
      * 不加该标志会导致请求层层堆积、越积越多。
+     *
+     * 注意：该标志**只能**交给当时最新的那个刷新协程复位（见 [refreshOnce] 的 finally），
+     * 否则被强制掐掉的旧协程会在事后把标志改回 false，堆积又会重演。
      */
     private var refreshing = false
+
+    /** 缓存的 API 实例与它的配置签名，配置没变就一直复用 */
+    private var cachedApi: GitHubApi? = null
+    private var cachedApiKey: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,11 +122,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        // 光取消 pollJob 是不够的：refreshOnce 起的是独立 Job，不会跟着结束，
+        // 于是回到前台时 refreshing 可能还是 true，之后的刷新全被静默吞掉。
         pollJob?.cancel()
+        pollJob = null
+        refreshJob?.cancel()
+        refreshJob = null
+        refreshing = false
     }
 
     private fun bindViews() {
         tvStatus = findViewById(R.id.tvStatus)
+        tvLastUpdate = findViewById(R.id.tvLastUpdate)
         tvElapsed = findViewById(R.id.tvElapsed)
         tvRemaining = findViewById(R.id.tvRemaining)
         tvIp = findViewById(R.id.tvIp)
@@ -102,7 +156,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupClicks() {
         btnStart.setOnClickListener { startSession() }
         btnStop.setOnClickListener { stopSession() }
-        btnRefresh.setOnClickListener { refreshOnce() }
+        btnRefresh.setOnClickListener { refreshOnce(force = true, userInitiated = true) }
         btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         tvIp.setOnClickListener { copyToClipboard("云桌面地址", tvIp.text.toString()) }
         tvUser.setOnClickListener { copyToClipboard("用户名", tvUser.text.toString()) }
@@ -131,9 +185,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun apiNow(): GitHubApi? =
-        if (prefs.token.isBlank()) null
-        else GitHubApi(prefs.token, prefs.owner, prefs.repo, prefs.workflowFile)
+    /**
+     * 取当前配置对应的 [GitHubApi]，配置没变则复用旧实例。
+     *
+     * 原来每次请求都新建一个实例，握手与连接池无法跨请求复用，一轮「拉状态」的大半时间
+     * 耗在 TLS 握手上；配合应用层缓存后，同一配置下的连续请求能稳定命中同一条长连接。
+     */
+    private fun apiNow(): GitHubApi? {
+        if (prefs.token.isBlank()) return null
+        val key = "${prefs.token}\u0000${prefs.owner}\u0000${prefs.repo}\u0000${prefs.workflowFile}"
+        val cached = cachedApi
+        if (cached != null && cachedApiKey == key) return cached
+        val created = GitHubApi(prefs.token, prefs.owner, prefs.repo, prefs.workflowFile)
+        cachedApi = created
+        cachedApiKey = key
+        return created
+    }
 
     private fun selectedHours(): Int = when (chipGroup.checkedChipId) {
         R.id.chip1 -> 1
@@ -154,30 +221,74 @@ class MainActivity : AppCompatActivity() {
                 delay(POLL_INTERVAL_MS)
             }
         }
+        // 回到前台立刻拉一次：用户此时看到的很可能还是离开前的陈旧状态
+        refreshOnce(force = true)
     }
 
-    private fun refreshOnce() {
-        if (refreshing) return
+    /**
+     * 拉一次最新状态并刷新界面。
+     *
+     * @param force true = 抢占式：先掐掉上一次仍在飞行/退避重试里的请求再发新的，并且
+     *   立刻在 tvLastUpdate 上给出「正在刷新…」。自动场景（切回前台、启停结束后的确认）
+     *   同样需要抢占能力，否则会被 [refreshing] 挡住。
+     *   false = 30 秒轮询：撞上飞行中的请求就静默跳过，不打扰用户。
+     * @param userInitiated true = **用户亲手点的「立即刷新」**。只有这种情况才弹 Toast；
+     *   其余自动场景（onResume、启停结束）都有各自的 Toast/状态行反馈，
+     *   再叠一个「状态已刷新」会变成噪音 —— 每次切回前台都弹一下，谁都受不了。
+     */
+    private fun refreshOnce(force: Boolean = false, userInitiated: Boolean = false) {
+        if (force) {
+            // 上一次请求可能还堵在重试退避里（单次理论可挂上百秒），直接取消腾位置
+            refreshJob?.cancel()
+        } else if (refreshing) {
+            return
+        }
         val api = apiNow() ?: run {
             tvStatus.text = "未配置 Token，请点击下方设置"
             return
         }
         refreshing = true
-        lifecycleScope.launch {
+        if (force) {
+            // tvStatus 会被 updateUi() 用状态文案覆盖回去，看不出「正在刷新」的瞬间；
+            // 这个常驻的时间戳行才是用户能看见的证据
+            tvLastUpdate.text = "正在刷新…"
+        }
+        refreshJob = lifecycleScope.launch {
             try {
-                try {
-                    currentRun = api.latestRun()
+                val run: RunInfo? = try {
+                    api.latestRun()
                 } catch (e: Exception) {
-                    tvStatus.text = "获取状态失败：${e.message}"
+                    if (isActive) {
+                        tvStatus.text = "获取状态失败：${e.message}"
+                        markRefreshFailed()
+                        // 失败也必须刷新按钮：否则两个按钮会一直沿用上一轮的启用/禁用状态
+                        updateUi()
+                    }
                     return@launch
                 }
+                if (!isActive) return@launch
+                currentRun = run
+                markRefreshSuccess()
                 updateUi()
                 // 状态行依赖 currentRun，必须在此同步刷新：refreshLink 可能因节流被跳过，
                 // 若只靠它回调，用户点「启动云桌面」后状态行会一直停在旧值。
                 updateLinkUi()
-                refreshLink(force = false)
+                // 用户点「立即刷新」时也一并更新连接信息区，否则那块区域永远匀速落后
+                refreshLink(force = force)
+                if (userInitiated && isActive) {
+                    Toast.makeText(this@MainActivity, "状态已刷新", Toast.LENGTH_SHORT).show()
+                }
             } finally {
-                refreshing = false
+                // 只有「当时最新的那个刷新协程」可以复位标志：
+                // ① 被 force 掐掉的旧协程必须闭嘴，否则它会把新协程的标志改回 false，
+                //    堆积照样发生；② 句柄还没赋回来就跑完的情况也要兜住，
+                //    否则 refreshing 会永久卡在 true，之后所有刷新都被静默吞掉
+                val self = coroutineContext[Job]
+                val current = refreshJob
+                if (current == null || current === self) {
+                    refreshing = false
+                    if (current === self) refreshJob = null
+                }
             }
         }
     }
@@ -185,13 +296,16 @@ class MainActivity : AppCompatActivity() {
     // ---------- 启停操作 ----------
 
     private fun startSession() {
+        if (startActionJob?.isActive == true) return
         val api = apiNow() ?: run {
             Toast.makeText(this, "请先在设置中配置 Token", Toast.LENGTH_SHORT).show(); return
         }
         val hours = selectedHours()
         btnStart.isEnabled = false
         btnStart.text = "启动中…"
-        lifecycleScope.launch {
+        // ⚠️ 同上 stopSession：协程体首句必须是挂起调用（此处是 api.dispatchWorkflow），
+        // 否则 Main.immediate 会抢在 `startActionJob =` 赋值前执行，导致互斥失效。
+        startActionJob = lifecycleScope.launch {
             try {
                 api.dispatchWorkflow(hours)
                 prefs.lastHours = hours
@@ -203,28 +317,157 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_LONG
                 ).show()
             } finally {
+                // 先把互斥 Job 摘掉，再基于最新已知状态复位按钮：不能只指望下面那次刷新
+                // 走到 updateUi，一旦它被吞掉按钮就会永久灰掉
+                startActionJob = null
                 btnStart.text = "启动云桌面"
+                updateUi()
                 // 即便上面因超时抛错，请求也可能实际已送达，刷新一次以确认真实状态
-                refreshOnce()
+                refreshOnce(force = true)
             }
         }
     }
 
+    /**
+     * 停止会话：强制拉一次最新 run，再取消，最后轮询到 GitHub 确认为止。
+     *
+     * 旧实现有两个致命问题：① 直接拿界面上那份 currentRun 去取消，而它很可能上一次
+     * 会话的残留（上一轮刷新失败/超时所致），取消打在已结束的 run 上会拿到 409，
+     * 又被 GitHubApi 当成成功，界面于是谎报「已发送停止命令」，机器却照跑；
+     * ② 发完就收工，没有重入保护也没有任何等待反馈，用户只能一直点。
+     */
     private fun stopSession() {
-        val api = apiNow() ?: return
-        val run = currentRun ?: return
+        if (stopActionJob?.isActive == true) return
+        val api = apiNow() ?: run {
+            Toast.makeText(this, "请先在设置中配置 Token", Toast.LENGTH_SHORT).show()
+            return
+        }
         btnStop.isEnabled = false
         btnStop.text = "停止中…"
-        lifecycleScope.launch {
+        setStatusOverride("正在读取最新会话状态…")
+        // ⚠️ 约束：协程体的**第一条有效语句必须是一个挂起调用**（此处是 api.latestRun）。
+        // lifecycleScope 用的是 Dispatchers.Main.immediate，协程体会抢在
+        // `stopActionJob = ...` 赋值完成前就同步执行一段；一旦有人在挂起点之前插入
+        // updateUi() 或 early-return，busy 会被算成 false，按钮禁用当场失效。
+        stopActionJob = lifecycleScope.launch {
             try {
-                api.cancelRun(run.id)
-                Toast.makeText(this@MainActivity, "已发送停止命令，虚拟机即将回收", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "停止失败：${e.message}", Toast.LENGTH_LONG).show()
+                // ① 先拿最新的一份 run 当取消目标，绝不用可能过期的界面缓存
+                var failureDetail: String? = null
+                val target: RunInfo? = try {
+                    api.latestRun(maxAttempts = INTERACTIVE_RUN_ATTEMPTS).also { currentRun = it }
+                } catch (e: Exception) {
+                    failureDetail = e.message
+                    null
+                }
+                if (target == null) {
+                    val message = failureDetail?.let { "无法确认当前会话：$it，请稍后重试" }
+                        ?: "当前没有运行中的会话，无需停止"
+                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                    updateUi()
+                    return@launch
+                }
+                if (!SessionState.isCancelable(target)) {
+                    // 没有活跃会话就直说，绝不谎报「已发送停止命令」
+                    Toast.makeText(this@MainActivity, "当前没有运行中的会话，无需停止", Toast.LENGTH_LONG).show()
+                    updateUi()
+                    return@launch
+                }
+
+                // ② 发取消
+                setStatusOverride("已发送停止命令，正在等待 GitHub 确认…")
+                var outcome: CancelOutcome = CancelOutcome.FAILED
+                try {
+                    outcome = api.cancelRun(target.id)
+                    failureDetail = null
+                } catch (e: Exception) {
+                    outcome = CancelOutcome.FAILED
+                    failureDetail = e.message
+                }
+
+                // 用**表达式**形式的 when：枚举将来多出一个值时这里会编译失败，
+                // 而不是静默跳过那个分支让用户点了停止却毫无反应
+                val message = when (outcome) {
+                    CancelOutcome.ACCEPTED -> if (
+                        watchCancellation(api, target.id) == CancelWatchVerdict.CONFIRMED
+                    ) {
+                        "已停止：云桌面会话已结束，虚拟机正在回收"
+                    } else {
+                        "取消指令已送达，但 GitHub 尚未确认生效，可再点一次「停止云桌面」重试"
+                    }
+                    CancelOutcome.ALREADY_FINISHED -> "该会话已经结束，本次未发出新的停止命令"
+                    CancelOutcome.FAILED ->
+                        "停止失败：${failureDetail ?: "未知错误"}\n请稍后重试，或到 GitHub 页面手动取消"
+                }
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
             } finally {
+                // 无论成功、失败还是异常，都要把按钮从「停止中…」恢复到可用状态
+                stopActionJob = null
+                statusOverride = null
                 btnStop.text = "停止云桌面"
-                refreshOnce()
+                updateUi()
+                refreshOnce(force = true)
             }
+        }
+    }
+
+    /**
+     * 取消确认巡检。
+     *
+     * GitHub 的 cancel 返回 202 只代表「已受理」，job 真被杀要几十秒甚至更久
+     * （本 workflow 最后一个 step 是 PowerShell 长驻保活循环，还带着 easytier-core
+     * 子进程）。这段时间必须给用户可见的进度，而不是立刻把按钮恢复让他继续点。
+     *
+     * @return [CancelWatchVerdict.CONFIRMED] 表示已确认回收，其余表示超时未确认
+     */
+    private suspend fun watchCancellation(api: GitHubApi, targetRunId: Long): CancelWatchVerdict {
+        val startedAt = System.currentTimeMillis()
+        var attempt = 0
+        var verdict = CancelWatchVerdict.CONTINUE
+        while (verdict == CancelWatchVerdict.CONTINUE && attempt < SessionState.CANCEL_WATCH_MAX_ATTEMPTS) {
+            delay(SessionState.CANCEL_WATCH_INTERVAL_MS)
+            attempt++
+            val latest = try {
+                api.latestRun(maxAttempts = INTERACTIVE_RUN_ATTEMPTS)
+            } catch (e: Exception) {
+                null
+            }
+            verdict = SessionState.evaluateCancelWatch(
+                targetRunId = targetRunId,
+                latest = latest,
+                elapsedMs = System.currentTimeMillis() - startedAt
+            )
+            // 只有「还是同一个目标」或「已确认回收」才写回界面数据。
+            // 巡检途中若有人新 dispatch 了一个 run，直接采用它会让 updateUi() 按新会话
+            // 把停止按钮重新启用，与此时仍在生效的 statusOverride（正在等待确认）自相矛盾。
+            if (latest != null && (latest.id == targetRunId || verdict == CancelWatchVerdict.CONFIRMED)) {
+                currentRun = latest
+            }
+            // 巡检期间保持状态行与按钮贴合实际情况（此时 statusOverride 仍在生效）
+            if (verdict == CancelWatchVerdict.CONTINUE) updateUi()
+        }
+        return verdict
+    }
+
+    private fun setStatusOverride(text: String?) {
+        statusOverride = text
+        if (text != null) tvStatus.text = text
+    }
+
+    /** 一次成功的刷新：记下时点并把它展示出来，作为「刚才确实动过」的证据 */
+    private fun markRefreshSuccess() {
+        lastStatusOkAt = System.currentTimeMillis()
+        tvLastUpdate.text = "最后更新 " + clockFormat.format(Date(lastStatusOkAt))
+    }
+
+    /**
+     * 一次失败的刷新：保留上一次成功的时点，让用户知道屏幕上的数据已经陈旧到什么程度。
+     * 从未成功过则直说，不能凭空给个时间。
+     */
+    private fun markRefreshFailed() {
+        tvLastUpdate.text = if (lastStatusOkAt == 0L) {
+            "刷新失败：尚未成功获取"
+        } else {
+            "刷新失败：上次更新 " + clockFormat.format(Date(lastStatusOkAt))
         }
     }
 
@@ -232,10 +475,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUi() {
         val run = currentRun
-        val running = run != null && (run.status == "queued" || run.status == "in_progress")
-        btnStart.isEnabled = !running
-        btnStop.isEnabled = running
-        tvStatus.text = statusText(run)
+        val running = SessionState.isActive(run?.status)
+        // 启停操作飞行期间，两个按钮都必须保持禁用：否则用户能在同一 run 上反复点停止
+        val busy = startActionJob?.isActive == true || stopActionJob?.isActive == true
+        btnStart.isEnabled = !running && !busy
+        btnStop.isEnabled = running && !busy
+        tvStatus.text = statusOverride ?: statusText(run)
 
         if (run == null) {
             tvElapsed.text = "—"
@@ -254,11 +499,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun statusText(run: RunInfo?): String = when {
         run == null -> "空闲：尚未运行过"
-        run.status == "queued" -> "排队中（等待分配虚拟机）"
-        run.status == "in_progress" -> "运行中"
+        // 过渡态（queued/requested/waiting/pending）统一按「排队中」展示，
+        // 否则落在下行会显示成「上次会话：pending」，与已启用的停止按钮自相矛盾
+        SessionState.isPending(run.status) -> "排队中（等待分配虚拟机）"
+        run.status == SessionState.STATUS_IN_PROGRESS -> "运行中"
         run.conclusion == "success" -> "上次会话：正常结束"
         run.conclusion == "failure" -> "上次会话：失败（可到 GitHub 查看日志）"
-        run.conclusion == "cancelled" -> "上次会话：已手动停止"
+        run.conclusion == "cancelled" -> "上次会话：已结束（手动停止或已跑满时长上限）"
         else -> "上次会话：${run.conclusion ?: run.status}"
     }
 
@@ -277,16 +524,25 @@ class MainActivity : AppCompatActivity() {
         val now = System.currentTimeMillis()
         if (!force && now - lastLinkFetchAt < LINK_FETCH_INTERVAL_MS) return
         val api = apiNow() ?: return
-        lastLinkFetchAt = now
-        lifecycleScope.launch {
+        // 先占住时间戳避免并发重复触发，真正失败时再回滚，
+        // 否则一次网络抖动就白白吃掉 25 秒配额
+        val stamp = now
+        lastLinkFetchAt = stamp
+        linkJob?.cancel()
+        linkJob = lifecycleScope.launch {
+            var ok = false
             try {
                 agentDockLink = api.fetchAgentDockLink(prefs.stateOwner, prefs.stateRepo, prefs.statePath)
+                ok = true
             } catch (e: Exception) {
                 if (force) {
                     Toast.makeText(this@MainActivity, "读取连接信息失败：${e.message}", Toast.LENGTH_LONG).show()
                 }
+            } finally {
+                // 失败一律回滚时间戳，让下一次轮询可以立刻重试
+                if (!ok && lastLinkFetchAt == stamp) lastLinkFetchAt = 0L
+                updateLinkUi()
             }
-            updateLinkUi()
         }
     }
 
@@ -294,8 +550,8 @@ class MainActivity : AppCompatActivity() {
         val link = agentDockLink
         if (link == null) {
             val run = currentRun
-            val pending = run != null && run.status in PENDING_STATUSES
-            val running = run != null && run.status == "in_progress"
+            val pending = run != null && run.status in SessionState.PENDING_STATUSES
+            val running = run != null && run.status == SessionState.STATUS_IN_PROGRESS
             tvLinkTitle.text = "AI 助手连接提示词"
             tvLinkState.text = when {
                 pending -> "● 正在分配虚拟机…"
@@ -341,8 +597,8 @@ class MainActivity : AppCompatActivity() {
     private fun resolveLinkState(link: AgentDockLink): LinkState {
         val run = currentRun ?: return LinkState.STALE
         return when {
-            run.status in PENDING_STATUSES -> LinkState.QUEUED
-            run.status == "in_progress" -> when {
+            run.status in SessionState.PENDING_STATUSES -> LinkState.QUEUED
+            run.status == SessionState.STATUS_IN_PROGRESS -> when {
                 link.health == "healthy" -> LinkState.READY
                 link.health == "pending-logon" -> LinkState.PENDING_LOGON
                 !link.installed -> LinkState.FAILED
@@ -424,8 +680,12 @@ class MainActivity : AppCompatActivity() {
         /** 连接信息拉取节流。必须小于 [POLL_INTERVAL_MS]，否则会出现等待空窗。 */
         private const val LINK_FETCH_INTERVAL_MS = 25_000L
 
-        /** workflow_dispatch 后、VM 真正跑起来之前的过渡态（GitHub 会先后给出其中若干个） */
-        private val PENDING_STATUSES = setOf("requested", "waiting", "pending", "queued")
+        /**
+         * 交互路径（点「停止」前后定位 run）的重试次数。
+         *
+         * 后台轮询可以慢慢退避重试，用户在按钮前干等不行，少一轮退避少最坏几十秒。
+         */
+        private const val INTERACTIVE_RUN_ATTEMPTS = 2
     }
 
     // ---------- 剪贴板 ----------

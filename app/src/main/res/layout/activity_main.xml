@@ -41,6 +41,18 @@
                     android:textStyle="bold"
                     android:text="加载中…" />
 
+                <!-- 最后一次刷新的结果与时点。
+                     它是「点刷新到底有没有动静」的常驻证据：接口常常 0.5 秒就返回，
+                     状态文案可能压根没变，光靠 Toast 用户是察觉不到的。
+                     刻意不加任何 style/color：values/colors.xml 只有语义状态色，没有灰阶文字色。 -->
+                <TextView
+                    android:id="@+id/tvLastUpdate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textSize="12sp"
+                    android:text="尚未刷新" />
+
                 <TextView
                     android:id="@+id/tvElapsed"
                     android:layout_width="wrap_content"

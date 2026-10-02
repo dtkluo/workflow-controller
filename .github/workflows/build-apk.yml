@@ -24,6 +24,16 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # 先跑纯 JVM 单元测试再打包：SessionStateTest 覆盖「已结束会话不许发取消」与
+      # 「网络抖动不得误判为已停止」两条核心防线，回归了就别往下走。
+      # 用 testDebugUnitTest 而不是 test：AGP 的 test 是聚合任务，会把 debug 与
+      # release 两个变体的单测各跑一遍（编译两遍、失败面翻倍），而这两个变体共用同一份
+      # main 源码，跑 release 单测没有任何额外信息量。testDebugUnitTest 是 AGP 官方
+      # 推荐的单变体写法，只编译纯 JVM 测试源，不触发 Android 打包链路。
+      # 失败时 Gradle 会在控制台打印失败用例名与断言消息，无需额外上传报告。
+      - name: 运行单元测试
+        run: gradle :app:testDebugUnitTest --no-daemon
+
       # 密钥只存在于 Actions secret 中，运行时还原到临时目录，绝不写入工作区/仓库。
       # 之前这里是「不存在就生成一个并 git push」—— 那等于每次都可能把签名密钥提交到
       # 公开仓库，是必须铲掉的机制。

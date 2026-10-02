@@ -4,6 +4,8 @@ import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -67,6 +69,10 @@ data class AgentDockLink(
  * 偶发超过 15s；② 请求可能在传输中偶发中断。因此这里统一提高超时阈值，并对
  * **只读请求**做指数退避重试；写操作中 [dispatchWorkflow] 不自动重试（避免网络抖动
  * 导致同一会话被重复触发，白耗 Actions 额度），[cancelRun] 幂等故允许重试。
+ *
+ * OkHttpClient 是全进程共享的（见 [SHARED_CLIENT]）：鉴权走的是**每请求**的 Header，
+ * 客户端本身与 Token 无关，因此可以安全共用；共用后连接池与线程池得以复用，
+ * 免掉每轮轮询都要重做的 TCP + TLS 握手。
  */
 class GitHubApi(
     private val token: String,
@@ -86,15 +92,44 @@ class GitHubApi(
         const val MAX_ATTEMPTS = 3
         /** 退避基数：800ms，之后 1.6s（第 3 次前不再等待，直接抛出） */
         const val RETRY_BASE_DELAY_MS = 800L
+
+        /** 共享连接池：keep-alive 30s，足以跨过 30s 轮询周期复用同一条连接 */
+        const val MAX_IDLE_CONNECTIONS = 8
+        const val KEEP_ALIVE_SECONDS = 30L
+        const val MAX_REQUESTS_PER_HOST = 8
+
+        private val CONNECTION_POOL =
+            ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
+
+        private val DISPATCHER = Dispatcher().apply { maxRequestsPerHost = MAX_REQUESTS_PER_HOST }
+
+        private val CLIENT_LOCK = Any()
+
+        /**
+         * 进程内唯一的 OkHttpClient。
+         *
+         * 原来它是实例字段：调用方每次 `GitHubApi(...)` 都会顺带新建一个客户端，
+         * 连接池与线程池无法复用，每次请求都得重新握手 —— 一轮「拉状态」有一大半时间
+         * 花在握手上，请求迟迟不返回，后续刷新就被上层防重入标志整条吞掉。
+         */
+        @Volatile
+        private var SHARED_CLIENT: OkHttpClient? = null
+
+        private fun sharedClient(): OkHttpClient = SHARED_CLIENT ?: synchronized(CLIENT_LOCK) {
+            SHARED_CLIENT ?: OkHttpClient.Builder()
+                .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
+                .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
+                .writeTimeout(WRITE_TIMEOUT_S, TimeUnit.SECONDS)
+                .callTimeout(CALL_TIMEOUT_S, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .connectionPool(CONNECTION_POOL)
+                .dispatcher(DISPATCHER)
+                .build()
+                .also { SHARED_CLIENT = it }
+        }
     }
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
-        .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
-        .writeTimeout(WRITE_TIMEOUT_S, TimeUnit.SECONDS)
-        .callTimeout(CALL_TIMEOUT_S, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val client: OkHttpClient = sharedClient()
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
@@ -195,9 +230,14 @@ class GitHubApi(
         }
     }
 
-    /** 查询该工作流最近一次运行，无记录返回 null */
-    suspend fun latestRun(): RunInfo? = withContext(Dispatchers.IO) {
-        withRetry("获取运行状态") {
+    /**
+     * 查询该工作流最近一次运行，无记录返回 null。
+     *
+     * @param maxAttempts 重试次数。交互路径（点「停止」前定位目标 run）可以调低，
+     *                    让用户在最坏情况下少等一轮退避。
+     */
+    suspend fun latestRun(maxAttempts: Int = MAX_ATTEMPTS): RunInfo? = withContext(Dispatchers.IO) {
+        withRetry("获取运行状态", maxAttempts = maxAttempts) {
             client.newCall(buildRequest("/actions/workflows/$workflowFile/runs?per_page=1", "GET"))
                 .execute().use { resp ->
                     val text = resp.body?.string() ?: ""
@@ -222,14 +262,28 @@ class GitHubApi(
         }
     }
 
-    /** 取消指定运行（幂等：重复取消已完成实例无副作用，故允许重试） */
-    suspend fun cancelRun(runId: Long): Unit = withContext(Dispatchers.IO) {
+    /**
+     * 取消指定运行。
+     *
+     * **409/422 不再伪装成成功**：它们意味着「这个 run 已经结束、本次取消没有停掉任何东西」。
+     * 以前把它当成功，界面就会弹出「已发送停止命令」，而真正跑着的实例毫发无损 ——
+     * 用户只能反复点，直到某一次轮询恰好刷到真正在跑的那条 run。
+     *
+     * @return 明确的分类结果，见 [CancelOutcome]
+     * @throws ApiException 网络不可达、超时耗尽重试，或 Token/仓库等业务性错误
+     */
+    suspend fun cancelRun(runId: Long): CancelOutcome = withContext(Dispatchers.IO) {
         withRetry("停止云桌面") {
             client.newCall(buildRequest("/actions/runs/$runId/cancel", "POST")).execute().use { resp ->
-                // 202 = 已受理；409/422 = 该实例已结束，视作成功，不必报错
-                if (resp.code != 202 && resp.code != 409 && resp.code != 422) {
-                    val text = resp.body?.string() ?: ""
-                    throw ApiException(failMessage(resp.code, text), isRetryable(resp.code))
+                when (resp.code) {
+                    // 202 = 已受理，job 会在稍后被真正杀掉（异步，需要后续巡检确认）
+                    202 -> CancelOutcome.ACCEPTED
+                    // 409 = 该 run 已结束；422 = 该 run 不接受取消。两者都不算成功
+                    409, 422 -> CancelOutcome.ALREADY_FINISHED
+                    else -> {
+                        val text = resp.body?.string() ?: ""
+                        throw ApiException(failMessage(resp.code, text), isRetryable(resp.code))
+                    }
                 }
             }
         }
