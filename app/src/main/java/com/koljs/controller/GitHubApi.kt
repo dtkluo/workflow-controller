@@ -59,7 +59,13 @@ data class AgentDockLink(
     val easytierIp: String?,
     val socks5: String?,
     val rdpUser: String?,
-    val prompt: String?
+    val prompt: String?,
+    val piikState: String?,
+    val piikUrl: String?,
+    val piikPassword: String?,
+    val piikRoomCode: String?,
+    val piikRemoteControl: Boolean,
+    val piikMessage: String?
 )
 
 /**
@@ -324,6 +330,7 @@ class GitHubApi(
                 val root = JSONObject(decoded)
                 val agentDock = root.optJSONObject("agentdock")
                 val desktop = root.optJSONObject("cloud_desktop")
+                val piik = root.optJSONObject("piik")
 
                 AgentDockLink(
                     updatedAt = root.optText("updated_at"),
@@ -342,7 +349,13 @@ class GitHubApi(
                     easytierIp = desktop?.optText("easytier_ip"),
                     socks5 = desktop?.optText("socks5"),
                     rdpUser = desktop?.optText("rdp_user"),
-                    prompt = root.optText("prompt")
+                    prompt = root.optText("prompt"),
+                    piikState = piik?.optText("state"),
+                    piikUrl = piik?.optText("url"),
+                    piikPassword = piik?.optText("password"),
+                    piikRoomCode = piik?.optText("room_code"),
+                    piikRemoteControl = piik?.optBoolean("remote_control", false) ?: false,
+                    piikMessage = piik?.optText("message")
                 )
             }
         }
