@@ -209,6 +209,55 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- 浏览器远控（Piik）卡片 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp"
+            android:layout_marginTop="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="浏览器远控（Piik）"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvPiikState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:text="未启动" />
+
+                <TextView
+                    android:id="@+id/tvPiikUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textSize="13sp"
+                    android:textIsSelectable="true"
+                    android:text="启动云桌面后自动开播，链接显示在这里（点击复制）" />
+
+                <TextView
+                    android:id="@+id/tvPiikPass"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textSize="13sp"
+                    android:text="房间密码：—" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- AI 助手连接提示词卡片 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
