@@ -61,6 +61,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLinkTitle: TextView
     private lateinit var tvLinkInfo: TextView
     private lateinit var tvLinkState: TextView
+    private lateinit var tvPiikState: TextView
+    private lateinit var tvPiikUrl: TextView
+    private lateinit var tvPiikPass: TextView
     private lateinit var tvLinkMcp: TextView
     private lateinit var tvLinkToken: TextView
     private lateinit var btnCopyPrompt: MaterialButton
@@ -147,6 +150,19 @@ class MainActivity : AppCompatActivity() {
         tvLinkTitle = findViewById(R.id.tvLinkTitle)
         tvLinkInfo = findViewById(R.id.tvLinkInfo)
         tvLinkState = findViewById(R.id.tvLinkState)
+        tvPiikState = findViewById(R.id.tvPiikState)
+        tvPiikUrl = findViewById(R.id.tvPiikUrl)
+        tvPiikPass = findViewById(R.id.tvPiikPass)
+        tvPiikUrl.setOnClickListener {
+            val u = agentDockLink?.piikUrl
+            if (u.isNullOrBlank()) Toast.makeText(this, "浏览器远控尚未就绪", Toast.LENGTH_SHORT).show()
+            else copyToClipboard("浏览器远控链接", u)
+        }
+        tvPiikPass.setOnClickListener {
+            val p = agentDockLink?.piikPassword
+            if (p.isNullOrBlank()) Toast.makeText(this, "暂无房间密码", Toast.LENGTH_SHORT).show()
+            else copyToClipboard("房间密码", p)
+        }
         tvLinkMcp = findViewById(R.id.tvLinkMcp)
         tvLinkToken = findViewById(R.id.tvLinkToken)
         btnCopyPrompt = findViewById(R.id.btnCopyPrompt)
@@ -546,8 +562,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Piik 浏览器远控：链接每次开机都变（临时公网域名），所以直接取状态文件里的值。
+     * 分享中显示绿色，未就绪显示中性提示；两项都能点击复制。
+     */
+    private fun renderPiik(link: AgentDockLink?) {
+        val url = link?.piikUrl
+        if (url.isNullOrBlank()) {
+            tvPiikState.text = "未启动"
+            tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
+            tvPiikUrl.text = "启动云桌面后自动开播，链接显示在这里（点击复制）"
+            tvPiikPass.text = "房间密码：—"
+            return
+        }
+        val sharing = link?.piikState == "sharing"
+        val remote = link?.piikRemoteControl == true
+        tvPiikState.text = when {
+            sharing && remote -> "● 分享中（允许远控）"
+            sharing -> "● 分享中（远控未开启）"
+            else -> "● " + (link?.piikMessage ?: link?.piikState ?: "未知")
+        }
+        tvPiikState.setTextColor(ContextCompat.getColor(this, if (sharing) R.color.status_ok else R.color.status_info))
+        tvPiikUrl.text = url
+        tvPiikPass.text = "房间密码：" + (link?.piikPassword ?: "—") + (link?.piikRoomCode?.let { "　房间码：" + it } ?: "")
+    }
+
     private fun updateLinkUi() {
         val link = agentDockLink
+        renderPiik(link)
         if (link == null) {
             val run = currentRun
             val pending = run != null && run.status in SessionState.PENDING_STATUSES
