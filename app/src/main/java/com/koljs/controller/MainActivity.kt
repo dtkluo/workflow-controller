@@ -169,7 +169,20 @@ class MainActivity : AppCompatActivity() {
         tvPiikUrl = findViewById(R.id.tvPiikUrl)
         tvPiikPass = findViewById(R.id.tvPiikPass)
         tvPiikUrl.setOnClickListener {
-            val u = agentDockLink?.piikUrl
+            val link = agentDockLink
+            // BilldDesk 卡片这一行放的是「设备码」，不是链接
+            if (link != null && link.bdState != null) {
+                val code = link.bdDeviceCode
+                when {
+                    code.isNullOrBlank() ->
+                        Toast.makeText(this, "BilldDesk 尚未就绪", Toast.LENGTH_SHORT).show()
+                    !sessionLive() ->
+                        Toast.makeText(this, "云桌面未在运行：该设备码已失效，请先启动云桌面", Toast.LENGTH_LONG).show()
+                    else -> copyToClipboard("BilldDesk 设备码", code)
+                }
+                return@setOnClickListener
+            }
+            val u = link?.piikUrl
             when {
                 u.isNullOrBlank() ->
                     Toast.makeText(this, "浏览器远控尚未就绪", Toast.LENGTH_SHORT).show()
@@ -180,9 +193,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         tvPiikPass.setOnClickListener {
-            val p = agentDockLink?.piikPassword
-            if (p.isNullOrBlank()) Toast.makeText(this, "暂无房间密码", Toast.LENGTH_SHORT).show()
-            else copyToClipboard("房间密码", p)
+            val link = agentDockLink
+            val isBd = link?.bdState != null
+            val p = if (isBd) link?.bdPassword else link?.piikPassword
+            if (p.isNullOrBlank()) Toast.makeText(this, "暂无可复制的密码", Toast.LENGTH_SHORT).show()
+            else copyToClipboard(if (isBd) "BilldDesk 连接密码" else "房间密码", p)
         }
         tvGuacState = findViewById(R.id.tvGuacState)
         tvGuacUrl = findViewById(R.id.tvGuacUrl)
@@ -634,6 +649,11 @@ class MainActivity : AppCompatActivity() {
      * 的假象。
      */
     private fun renderPiik(link: AgentDockLink?) {
+        // BilldDesk 已取代 Piik：状态文件里带 billddesk 节点时走新的渲染分支
+        if (link != null && link.bdState != null) {
+            renderBillDesk(link)
+            return
+        }
         val url = link?.piikUrl
         val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
@@ -670,6 +690,7 @@ class MainActivity : AppCompatActivity() {
         tvPiikState.text = when {
             !live -> "未启动"
             failed -> "● Piik 启动失败"
+            state == "retired" -> "● 已切换到 BilldDesk，等待状态同步…"
             else -> "● Piik 启动中…（首次约 4 分钟）"
         }
         tvPiikState.setTextColor(
@@ -685,6 +706,7 @@ class MainActivity : AppCompatActivity() {
         tvPiikUrl.text = when {
             !live -> "云桌面开机后自动开播，链接显示在这里"
             failed -> "失败原因：" + (link?.piikMessage ?: "未知")
+            state == "retired" -> "正在读取 BilldDesk 设备码，稍后自动出现"
             else -> "正在拉起浏览器远控，就绪后链接自动出现在这里"
         }
         tvPiikPass.text = if (live) {
@@ -715,6 +737,53 @@ class MainActivity : AppCompatActivity() {
                 tvPiikUrl.text = "$url\n上次会话的链接，已失效"
                 tvPiikPass.text = "房间密码：—（已随会话结束）"
             }
+        }
+    }
+
+    /**
+     * BilldDesk 远程控制卡片（已取代 Piik）。
+     *
+     * 与 Piik 的差别在入口形态：Piik 给一次性公网链接，BilldDesk 给「设备码 + 连接密码」
+     * 这对凭据 —— 每次开机重装都会变，所以卡片直接把两项摆在界面上、点一下复制。
+     *
+     * ⚠️ 同 [renderPiik]：能否连仍由 [snapshotTrust] 决定。状态文件关机不清空只是停更，
+     * 只认 state 字段会出现「手机显示已就绪、机器其实早就停了」的假象；
+     * 且 `piik` 节点已被标成 `retired`，绝不能再用它判断。
+     */
+    private fun renderBillDesk(link: AgentDockLink) {
+        val trust = snapshotTrust(link)
+        val live = trust == SnapshotTrust.LIVE
+        val ready = live && link.bdState == "ready"
+        val broken = live && (link.bdState == "failed" || link.bdState == "degraded")
+
+        tvPiikState.text = when {
+            !live -> "● 云桌面未在运行"
+            ready -> "● 已就绪（允许远控）"
+            broken -> "● BilldDesk 启动异常"
+            else -> "● BilldDesk 启动中…（首次约 4 分钟）"
+        }
+        tvPiikState.setTextColor(
+            ContextCompat.getColor(
+                this,
+                when {
+                    ready -> R.color.status_ok
+                    broken -> R.color.status_bad
+                    live -> R.color.status_info
+                    else -> R.color.status_muted
+                }
+            )
+        )
+
+        tvPiikUrl.text = when {
+            ready -> link.bdDeviceCode ?: "—"
+            !live -> "云桌面开机后自动启动，设备码显示在这里"
+            broken -> "失败原因：" + (link.bdMessage ?: "未知")
+            else -> "正在拉起 BilldDesk，就绪后设备码自动出现在这里"
+        }
+        tvPiikPass.text = when {
+            ready -> "连接密码：" + (link.bdPassword ?: "—") + "　（点击复制）"
+            live -> "连接密码：—"
+            else -> "连接密码：—（已随会话结束）"
         }
     }
 
