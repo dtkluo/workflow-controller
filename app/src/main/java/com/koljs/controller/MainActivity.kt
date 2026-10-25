@@ -637,10 +637,7 @@ class MainActivity : AppCompatActivity() {
         val url = link?.piikUrl
         val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
-            tvPiikState.text = if (trust == SnapshotTrust.LIVE) "未启动" else "待同步"
-            tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
-            tvPiikUrl.text = "启动云桌面后自动开播，链接显示在这里（点击复制）"
-            tvPiikPass.text = "房间密码：—"
+            renderPiikNotReady(link, trust)
             return
         }
         if (trust != SnapshotTrust.LIVE) {
@@ -657,6 +654,44 @@ class MainActivity : AppCompatActivity() {
         tvPiikState.setTextColor(ContextCompat.getColor(this, if (sharing) R.color.status_ok else R.color.status_info))
         tvPiikUrl.text = url
         tvPiikPass.text = "房间密码：" + (link?.piikPassword ?: "—") + (link?.piikRoomCode?.let { "　房间码：" + it } ?: "")
+    }
+
+    /**
+     * 会话在跑、但 piik 还没开出链接时的卡片。
+     *
+     * 这里以前一律写「未启动」，而真实情况是「云桌面在跑、Piik 正在拉起」——
+     * 用户看到「未启动」只会以为功能没生效（实测首轮从 job 开始到出链接约 4 分钟：
+     * EasyTier 自检 → 虚拟声卡 → Piik 启动 → 状态回推）。必须把进度说出来。
+     */
+    private fun renderPiikNotReady(link: AgentDockLink?, trust: SnapshotTrust) {
+        val live = trust == SnapshotTrust.LIVE
+        val state = link?.piikState
+        val failed = live && state == "failed"
+        tvPiikState.text = when {
+            !live -> "未启动"
+            failed -> "● Piik 启动失败"
+            else -> "● Piik 启动中…（首次约 4 分钟）"
+        }
+        tvPiikState.setTextColor(
+            ContextCompat.getColor(
+                this,
+                when {
+                    !live -> R.color.status_muted
+                    failed -> R.color.status_bad
+                    else -> R.color.status_info
+                }
+            )
+        )
+        tvPiikUrl.text = when {
+            !live -> "云桌面开机后自动开播，链接显示在这里"
+            failed -> "失败原因：" + (link?.piikMessage ?: "未知")
+            else -> "正在拉起浏览器远控，就绪后链接自动出现在这里"
+        }
+        tvPiikPass.text = if (live) {
+            "房间密码：" + (link?.piikPassword ?: "—")
+        } else {
+            "房间密码：—"
+        }
     }
 
     /** 状态文件不可采信时的 piik 卡片渲染：[url] 是文件里那条旧链接 */
@@ -694,10 +729,7 @@ class MainActivity : AppCompatActivity() {
         val url = link?.guacUrl
         val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
-            tvGuacState.text = if (trust == SnapshotTrust.LIVE) "未启动" else "待同步"
-            tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
-            tvGuacUrl.text = "云桌面开机后后台自动部署，链接显示在这里"
-            tvGuacCred.text = "账号：—"
+            renderGuacNotReady(link, trust)
             return
         }
         if (trust != SnapshotTrust.LIVE) {
@@ -724,6 +756,42 @@ class MainActivity : AppCompatActivity() {
         tvGuacUrl.text = if (ready) "$url\n点击打开 · 长按复制" else url
         tvGuacCred.text = "账号：" + (link?.guacUsername ?: "admin") +
             "　密码：" + (link?.guacPassword ?: "—") + "　（点击复制）"
+    }
+
+    /**
+     * 会话在跑、但网页端还没有地址时的卡片。
+     *
+     * 部署要跑在后台任务里（WSL 安装 → Docker → 拉镜像 → 起 guacd/Tomcat → cloudflared），
+     * 实测首轮约 3 分 45 秒才出地址。这段时间以前显示「未启动」，容易被误认为没部署。
+     */
+    private fun renderGuacNotReady(link: AgentDockLink?, trust: SnapshotTrust) {
+        val live = trust == SnapshotTrust.LIVE
+        val state = link?.guacState
+        val failed = live && state == "failed"
+        val building = live && state == "building"
+        tvGuacState.text = when {
+            !live -> "未启动"
+            failed -> "● 网页端部署失败"
+            building -> "● 网页端部署中（约 3-4 分钟）"
+            else -> "● 网页端准备中…"
+        }
+        tvGuacState.setTextColor(
+            ContextCompat.getColor(
+                this,
+                when {
+                    !live -> R.color.status_muted
+                    failed -> R.color.status_bad
+                    else -> R.color.status_info
+                }
+            )
+        )
+        tvGuacUrl.text = when {
+            !live -> "云桌面开机后后台自动部署，链接显示在这里"
+            failed -> "失败原因：" + (link?.guacMessage ?: "未知")
+            building -> "后台正在装 Docker + Guacamole，完成后链接自动出现"
+            else -> "稍候开始后台部署，链接会自动出现"
+        }
+        tvGuacCred.text = "账号：" + (link?.guacUsername ?: "admin")
     }
 
     /** 状态文件不可采信时的网页端 RDP 卡片渲染 */
