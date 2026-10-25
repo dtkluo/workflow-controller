@@ -64,6 +64,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPiikState: TextView
     private lateinit var tvPiikUrl: TextView
     private lateinit var tvPiikPass: TextView
+    private lateinit var tvGuacState: TextView
+    private lateinit var tvGuacUrl: TextView
+    private lateinit var tvGuacCred: TextView
     private lateinit var tvLinkMcp: TextView
     private lateinit var tvLinkToken: TextView
     private lateinit var btnCopyPrompt: MaterialButton
@@ -162,6 +165,20 @@ class MainActivity : AppCompatActivity() {
             val p = agentDockLink?.piikPassword
             if (p.isNullOrBlank()) Toast.makeText(this, "暂无房间密码", Toast.LENGTH_SHORT).show()
             else copyToClipboard("房间密码", p)
+        }
+        tvGuacState = findViewById(R.id.tvGuacState)
+        tvGuacUrl = findViewById(R.id.tvGuacUrl)
+        tvGuacCred = findViewById(R.id.tvGuacCred)
+        tvGuacUrl.setOnClickListener { openGuacUrl() }
+        tvGuacUrl.setOnLongClickListener {
+            copyToClipboard("网页端 RDP 地址", agentDockLink?.guacUrl ?: "")
+            true
+        }
+        tvGuacCred.setOnClickListener {
+            val u = agentDockLink?.guacUsername ?: "admin"
+            val p = agentDockLink?.guacPassword
+            if (p.isNullOrBlank()) Toast.makeText(this, "暂无网页端密码", Toast.LENGTH_SHORT).show()
+            else copyToClipboard("网页端账号", "$u / $p")
         }
         tvLinkMcp = findViewById(R.id.tvLinkMcp)
         tvLinkToken = findViewById(R.id.tvLinkToken)
@@ -587,9 +604,58 @@ class MainActivity : AppCompatActivity() {
         tvPiikPass.text = "房间密码：" + (link?.piikPassword ?: "—") + (link?.piikRoomCode?.let { "　房间码：" + it } ?: "")
     }
 
+    /**
+     * 网页端 RDP（Guacamole）：由云桌面后台异步部署，链接同样是每次开机变化的临时公网域名。
+     * 点击直接打开浏览器，长按复制链接；账号密码点击可一次复制两项。
+     */
+    private fun renderGuac(link: AgentDockLink?) {
+        val url = link?.guacUrl
+        if (url.isNullOrBlank()) {
+            tvGuacState.text = "未启动"
+            tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
+            tvGuacUrl.text = "云桌面开机后后台自动部署，链接显示在这里"
+            tvGuacCred.text = "账号：—"
+            return
+        }
+        val ready = link?.guacState == "ready"
+        tvGuacState.text = when (link?.guacState) {
+            "ready" -> "● 网页端已就绪（点击下方链接打开）"
+            "building" -> "● 后台部署中，约 2-3 分钟后可用"
+            "failed" -> "● 部署失败"
+            else -> "● " + (link?.guacMessage ?: "未知")
+        }
+        tvGuacState.setTextColor(
+            ContextCompat.getColor(
+                this,
+                when (link?.guacState) {
+                    "ready" -> R.color.status_ok
+                    "failed" -> R.color.status_bad
+                    else -> R.color.status_info
+                }
+            )
+        )
+        tvGuacUrl.text = if (ready) "$url\n点击打开 · 长按复制" else url
+        tvGuacCred.text = "账号：" + (link?.guacUsername ?: "admin") +
+            "　密码：" + (link?.guacPassword ?: "—") + "　（点击复制）"
+    }
+
+    private fun openGuacUrl() {
+        val u = agentDockLink?.guacUrl
+        if (u.isNullOrBlank()) {
+            Toast.makeText(this, "网页端 RDP 尚未就绪", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)))
+        } catch (e: Exception) {
+            copyToClipboard("网页端 RDP 地址", u)
+        }
+    }
+
     private fun updateLinkUi() {
         val link = agentDockLink
         renderPiik(link)
+        renderGuac(link)
         if (link == null) {
             val run = currentRun
             val pending = run != null && run.status in SessionState.PENDING_STATUSES
