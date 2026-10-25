@@ -403,6 +403,68 @@ class SessionStateTest {
     }
 
     @Test
+    fun `会话运行中且文件是本轮写的才算可用`() {
+        // createdAt = 1_700_000_000_000，文件在其后 40 秒写出 → 本轮真实信息
+        assertEquals(
+            SnapshotTrust.LIVE,
+            SessionState.resolveSnapshotTrust(
+                runInfo(status = "in_progress"),
+                snapshotAtMs = createdAt.time + 40_000L
+            )
+        )
+    }
+
+    @Test
+    fun `会话运行中但文件早于本次启动时判为残留`() {
+        // 新会话刚起来的那一两分钟，状态文件还是上一轮的（每 60s 才刷新一次）。
+        // 此时若照抄文件，界面会把上一轮的死链标成「分享中」。
+        assertEquals(
+            SnapshotTrust.RESIDUE,
+            SessionState.resolveSnapshotTrust(
+                runInfo(status = "in_progress"),
+                snapshotAtMs = createdAt.time - 10 * 60_000L
+            )
+        )
+    }
+
+    @Test
+    fun `容差内的秒级漂移不算残留`() {
+        assertEquals(
+            "两侧时钟有漂移，只是略早于 createdAt 不应判成上一轮",
+            SnapshotTrust.LIVE,
+            SessionState.resolveSnapshotTrust(
+                runInfo(status = "in_progress"),
+                snapshotAtMs = createdAt.time - 30_000L
+            )
+        )
+        assertEquals(
+            SessionState.SNAPSHOT_SKEW_TOLERANCE_MS,
+            180_000L
+        )
+    }
+
+    @Test
+    fun `快照时间解析不出来时不做新鲜度判断`() {
+        assertEquals(
+            "拿不到 updated_at 不能反过来把可用状态判成不可用",
+            SnapshotTrust.LIVE,
+            SessionState.resolveSnapshotTrust(runInfo(status = "in_progress"), snapshotAtMs = null)
+        )
+    }
+
+    @Test
+    fun `会话已结束时即便文件很新也不可用`() {
+        assertEquals(
+            "会话结束后文件不再更新，但最后那份仍然「很新」，必须按状态判死",
+            SnapshotTrust.STALE,
+            SessionState.resolveSnapshotTrust(
+                runInfo(status = "completed", conclusion = "cancelled"),
+                snapshotAtMs = createdAt.time + 3_600_000L
+            )
+        )
+    }
+
+    @Test
     fun `从未拉到 run 时快照不可用`() {
         assertEquals(
             "currentRun 为 null 说明一次都没有确认过会话，不能拿旧文件当真",
@@ -424,10 +486,11 @@ class SessionStateTest {
     fun `SnapshotTrust 枚举值的个数与名称不得被悄悄改动`() {
         val names = SnapshotTrust.values().map { it.name }
         assertEquals(
-            "MainActivity 的渲染分支依赖这三个值，改名/删除必须同步改那里",
-            listOf("PENDING", "LIVE", "STALE"),
+            "MainActivity 的 renderPiikInactive / renderGuacInactive 依赖这四个值，" +
+                "改名或删除必须同步改那里",
+            listOf("PENDING", "RESIDUE", "LIVE", "STALE"),
             names
         )
-        assertEquals(3, names.size)
+        assertEquals(4, names.size)
     }
 }
