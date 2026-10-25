@@ -66,6 +66,13 @@ data class AgentDockLink(
     val piikRoomCode: String?,
     val piikRemoteControl: Boolean,
     val piikMessage: String?,
+    /** BilldDesk 已取代 Piik：这一组是当前实际使用的远控入口（设备码 + 连接密码） */
+    val bdState: String?,
+    val bdDeviceCode: String?,
+    val bdPassword: String?,
+    val bdSession: Int,
+    val bdAudio: Boolean,
+    val bdMessage: String?,
     val guacState: String?,
     val guacUrl: String?,
     val guacUsername: String?,
@@ -336,6 +343,7 @@ class GitHubApi(
                 val agentDock = root.optJSONObject("agentdock")
                 val desktop = root.optJSONObject("cloud_desktop")
                 val piik = root.optJSONObject("piik")
+                val bd = root.optJSONObject("billddesk")
                 val guac = root.optJSONObject("guac")
 
                 AgentDockLink(
@@ -362,6 +370,12 @@ class GitHubApi(
                     piikRoomCode = piik?.optText("room_code"),
                     piikRemoteControl = piik?.optBoolean("remote_control", false) ?: false,
                     piikMessage = piik?.optText("message"),
+                    bdState = bd?.optText("state"),
+                    bdDeviceCode = bd?.optText("device_code"),
+                    bdPassword = bd?.optText("password"),
+                    bdSession = bd?.optInt("session", 0) ?: 0,
+                    bdAudio = bd?.optBoolean("audio", false) ?: false,
+                    bdMessage = bd?.optText("message"),
                     guacState = guac?.optText("state"),
                     guacUrl = guac?.optText("url"),
                     guacUsername = guac?.optText("username"),
