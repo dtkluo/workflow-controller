@@ -88,6 +88,18 @@ class MainActivity : AppCompatActivity() {
     private val clockFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     /**
+     * 解析状态文件的 `updated_at`（`(Get-Date).ToUniversalTime().ToString('o')` 产出，
+     * 形如 `2026-10-25T05:24:29.5994552Z`）。
+     *
+     * 只取到秒、按 UTC 解析：小数秒位数不固定，SimpleDateFormat 直接吃会失败；
+     * 而云端统一 ToUniversalTime 后再输出，尾部必然是 `Z`，按 UTC 解释没有歧义。
+     * 同样只在主线程使用。
+     */
+    private val snapshotParser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+
+    /**
      * 覆盖状态行的临时文案（优先于 [statusText]）。
      *
      * 取消确认巡检期间 30 秒轮询仍在跑、会不断调用 [updateUi]，没有它的话
@@ -590,43 +602,49 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 会话是否真的在跑。piik / 网页端 RDP 的入口只在此刻有效。
+     * 会话是否真的在跑、且状态文件描述的就是这一轮。
+     * piik / 网页端 RDP 的入口只在此刻有效。
      *
      * 状态文件是「上次写入时的快照」，云桌面关机后不会被清空，只是不再更新 ——
      * 因此这两张卡片绝不能用「文件里有链接」来判断可不可以连。
      */
     private fun sessionLive(): Boolean =
-        SessionState.resolveSnapshotTrust(currentRun) == SnapshotTrust.LIVE
+        snapshotTrust(agentDockLink) == SnapshotTrust.LIVE
+
+    private fun snapshotTrust(link: AgentDockLink?): SnapshotTrust =
+        SessionState.resolveSnapshotTrust(currentRun, parseSnapshotAt(link?.updatedAt))
+
+    /** 状态文件的 `updated_at` → epoch 毫秒；解析失败返回 null（不做新鲜度判断） */
+    private fun parseSnapshotAt(iso: String?): Long? {
+        if (iso.isNullOrBlank()) return null
+        val slice = if (iso.length >= 19) iso.substring(0, 19) else iso
+        return try {
+            snapshotParser.parse(slice)?.time
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     /**
      * Piik 浏览器远控：链接每次开机都变（临时公网域名），所以直接取状态文件里的值。
      * 分享中显示绿色，未就绪显示中性提示；两项都能点击复制。
      *
-     * ⚠️ 必须先用 [currentRun] 确认会话在跑（[sessionLive]）：状态文件不会随关机清空，
-     * 只看 state 字段会出现「手机显示分享中、机器其实早就停了」的假象。
+     * ⚠️ 必须先用 [currentRun] 确认会话在跑、且文件就是本轮写的（[snapshotTrust]）：
+     * 状态文件不会随关机清空，只看 state 字段会出现「手机显示分享中、机器其实早就停了」
+     * 的假象。
      */
     private fun renderPiik(link: AgentDockLink?) {
         val url = link?.piikUrl
+        val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
-            tvPiikState.text = "未启动"
+            tvPiikState.text = if (trust == SnapshotTrust.LIVE) "未启动" else "待同步"
             tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
             tvPiikUrl.text = "启动云桌面后自动开播，链接显示在这里（点击复制）"
             tvPiikPass.text = "房间密码：—"
             return
         }
-        val trust = SessionState.resolveSnapshotTrust(currentRun)
         if (trust != SnapshotTrust.LIVE) {
-            val pending = trust == SnapshotTrust.PENDING
-            tvPiikState.text = if (pending) {
-                "● 正在分配虚拟机…"
-            } else {
-                "● 云桌面未在运行（上次分享已结束）"
-            }
-            tvPiikState.setTextColor(
-                ContextCompat.getColor(this, if (pending) R.color.status_info else R.color.status_muted)
-            )
-            tvPiikUrl.text = "$url\n上次会话的链接，已失效"
-            tvPiikPass.text = "房间密码：—（已随会话结束）"
+            renderPiikInactive(trust, url)
             return
         }
         val sharing = link?.piikState == "sharing"
@@ -641,35 +659,49 @@ class MainActivity : AppCompatActivity() {
         tvPiikPass.text = "房间密码：" + (link?.piikPassword ?: "—") + (link?.piikRoomCode?.let { "　房间码：" + it } ?: "")
     }
 
+    /** 状态文件不可采信时的 piik 卡片渲染：[url] 是文件里那条旧链接 */
+    private fun renderPiikInactive(trust: SnapshotTrust, url: String) {
+        when (trust) {
+            SnapshotTrust.PENDING -> {
+                tvPiikState.text = "● 正在分配虚拟机…"
+                tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_info))
+                tvPiikUrl.text = "本轮会话尚未开播，稍候自动刷新"
+                tvPiikPass.text = "房间密码：—"
+            }
+            SnapshotTrust.RESIDUE -> {
+                tvPiikState.text = "● 云桌面已启动，等待本机同步…"
+                tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_info))
+                tvPiikUrl.text = "上一轮的链接已失效，本次开播后自动出现在这里"
+                tvPiikPass.text = "房间密码：—"
+            }
+            else -> {
+                tvPiikState.text = "● 云桌面未在运行（上次分享已结束）"
+                tvPiikState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
+                tvPiikUrl.text = "$url\n上次会话的链接，已失效"
+                tvPiikPass.text = "房间密码：—（已随会话结束）"
+            }
+        }
+    }
+
     /**
      * 网页端 RDP（Guacamole）：由云桌面后台异步部署，链接同样是每次开机变化的临时公网域名。
      * 点击直接打开浏览器，长按复制链接；账号密码点击可一次复制两项。
      *
-     * ⚠️ 同 [renderPiik]：必须先用 [sessionLive] 确认会话在跑，否则会残留
-     * 「网页端已就绪」的假象（trycloudflare 域名随进程消失，链接必然打不开）。
+     * ⚠️ 同 [renderPiik]：必须先用 [snapshotTrust] 确认会话在跑且文件是本轮的，
+     * 否则会残留「网页端已就绪」的假象（trycloudflare 域名随进程消失，链接必然打不开）。
      */
     private fun renderGuac(link: AgentDockLink?) {
         val url = link?.guacUrl
+        val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
-            tvGuacState.text = "未启动"
+            tvGuacState.text = if (trust == SnapshotTrust.LIVE) "未启动" else "待同步"
             tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
             tvGuacUrl.text = "云桌面开机后后台自动部署，链接显示在这里"
             tvGuacCred.text = "账号：—"
             return
         }
-        val trust = SessionState.resolveSnapshotTrust(currentRun)
         if (trust != SnapshotTrust.LIVE) {
-            val pending = trust == SnapshotTrust.PENDING
-            tvGuacState.text = if (pending) {
-                "● 正在分配虚拟机…"
-            } else {
-                "● 云桌面未在运行（上次网页端已失效）"
-            }
-            tvGuacState.setTextColor(
-                ContextCompat.getColor(this, if (pending) R.color.status_info else R.color.status_muted)
-            )
-            tvGuacUrl.text = "$url\n上次会话的地址，已失效"
-            tvGuacCred.text = "账号：" + (link?.guacUsername ?: "admin") + "　（需重新启动云桌面）"
+            renderGuacInactive(trust, link, url)
             return
         }
         val ready = link?.guacState == "ready"
@@ -692,6 +724,31 @@ class MainActivity : AppCompatActivity() {
         tvGuacUrl.text = if (ready) "$url\n点击打开 · 长按复制" else url
         tvGuacCred.text = "账号：" + (link?.guacUsername ?: "admin") +
             "　密码：" + (link?.guacPassword ?: "—") + "　（点击复制）"
+    }
+
+    /** 状态文件不可采信时的网页端 RDP 卡片渲染 */
+    private fun renderGuacInactive(trust: SnapshotTrust, link: AgentDockLink?, url: String) {
+        val user = link?.guacUsername ?: "admin"
+        when (trust) {
+            SnapshotTrust.PENDING -> {
+                tvGuacState.text = "● 正在分配虚拟机…"
+                tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_info))
+                tvGuacUrl.text = "本轮会话尚未部署，稍候自动刷新"
+                tvGuacCred.text = "账号：$user"
+            }
+            SnapshotTrust.RESIDUE -> {
+                tvGuacState.text = "● 云桌面已启动，后台部署中…"
+                tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_info))
+                tvGuacUrl.text = "上一轮的地址已失效，本次部署完成后自动出现"
+                tvGuacCred.text = "账号：$user"
+            }
+            else -> {
+                tvGuacState.text = "● 云桌面未在运行（上次网页端已失效）"
+                tvGuacState.setTextColor(ContextCompat.getColor(this, R.color.status_muted))
+                tvGuacUrl.text = "$url\n上次会话的地址，已失效"
+                tvGuacCred.text = "账号：$user　（需重新启动云桌面）"
+            }
+        }
     }
 
     private fun openGuacUrl() {
