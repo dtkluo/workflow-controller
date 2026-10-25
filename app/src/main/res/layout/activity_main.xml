@@ -209,7 +209,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- 浏览器远控（Piik）卡片 -->
+        <!-- 远程控制（BilldDesk）卡片：已取代 Piik 的浏览器远控 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -226,7 +226,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="浏览器远控（Piik）"
+                    android:text="远程控制（BilldDesk）"
                     android:textSize="14sp"
                     android:textStyle="bold" />
 
@@ -246,7 +246,7 @@
                     android:layout_marginTop="6dp"
                     android:textSize="13sp"
                     android:textIsSelectable="true"
-                    android:text="启动云桌面后自动开播，链接显示在这里（点击复制）" />
+                    android:text="启动云桌面后自动启动，设备码显示在这里（点击复制）" />
 
                 <TextView
                     android:id="@+id/tvPiikPass"
@@ -254,7 +254,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:textSize="13sp"
-                    android:text="房间密码：—" />
+                    android:text="连接密码：—" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
