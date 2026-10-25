@@ -65,7 +65,12 @@ data class AgentDockLink(
     val piikPassword: String?,
     val piikRoomCode: String?,
     val piikRemoteControl: Boolean,
-    val piikMessage: String?
+    val piikMessage: String?,
+    val guacState: String?,
+    val guacUrl: String?,
+    val guacUsername: String?,
+    val guacPassword: String?,
+    val guacMessage: String?
 )
 
 /**
@@ -331,6 +336,7 @@ class GitHubApi(
                 val agentDock = root.optJSONObject("agentdock")
                 val desktop = root.optJSONObject("cloud_desktop")
                 val piik = root.optJSONObject("piik")
+                val guac = root.optJSONObject("guac")
 
                 AgentDockLink(
                     updatedAt = root.optText("updated_at"),
@@ -355,7 +361,12 @@ class GitHubApi(
                     piikPassword = piik?.optText("password"),
                     piikRoomCode = piik?.optText("room_code"),
                     piikRemoteControl = piik?.optBoolean("remote_control", false) ?: false,
-                    piikMessage = piik?.optText("message")
+                    piikMessage = piik?.optText("message"),
+                    guacState = guac?.optText("state"),
+                    guacUrl = guac?.optText("url"),
+                    guacUsername = guac?.optText("username"),
+                    guacPassword = guac?.optText("password"),
+                    guacMessage = guac?.optText("message")
                 )
             }
         }
