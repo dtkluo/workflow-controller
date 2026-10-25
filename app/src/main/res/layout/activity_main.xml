@@ -258,6 +258,55 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- 网页端 RDP（Guacamole）卡片 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp"
+            android:layout_marginTop="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="网页端 RDP（桌面控制）"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvGuacState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:text="未启动" />
+
+                <TextView
+                    android:id="@+id/tvGuacUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textSize="13sp"
+                    android:textIsSelectable="true"
+                    android:text="云桌面开机后后台自动部署，链接显示在这里" />
+
+                <TextView
+                    android:id="@+id/tvGuacCred"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textSize="13sp"
+                    android:text="账号：—" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- AI 助手连接提示词卡片 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
