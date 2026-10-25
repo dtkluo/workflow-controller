@@ -364,4 +364,70 @@ class SessionStateTest {
         assertEquals(CancelWatchVerdict.CONTINUE, CancelWatchVerdict.valueOf("CONTINUE"))
         assertEquals(CancelWatchVerdict.TIMEOUT, CancelWatchVerdict.valueOf("TIMEOUT"))
     }
+
+    // ---------- resolveSnapshotTrust：状态文件里的链接还能不能采信 ----------
+
+    @Test
+    fun `会话运行中时快照可用`() {
+        assertEquals(
+            "in_progress 是唯一能证明「本轮信息已写出」的状态",
+            SnapshotTrust.LIVE,
+            SessionState.resolveSnapshotTrust(runInfo(status = "in_progress"))
+        )
+    }
+
+    @Test
+    fun `会话排队中时快照不可用`() {
+        // 刚点完「启动云桌面」时，状态文件里还留着上一轮的 piik / guac 链接；
+        // runner 尚未起来，本轮不可能已写出信息，必须判为不可用。
+        listOf("requested", "waiting", "pending", "queued").forEach { status ->
+            assertEquals(
+                "status=$status 时 runner 还没起来，文件里的链接只能是上一轮残留",
+                SnapshotTrust.PENDING,
+                SessionState.resolveSnapshotTrust(runInfo(status = status))
+            )
+        }
+    }
+
+    @Test
+    fun `会话已结束时快照一律不可用`() {
+        // 线上症状：手动停止云桌面后状态文件不会被清空（只是不再更新），
+        // 卡片仍显示「分享中 / 网页端已就绪」，点进去全是打不开的死链。
+        listOf("completed", "cancelled", "failure").forEach { status ->
+            assertEquals(
+                "status=$status 表示会话已结束，状态文件里的链接必然失效",
+                SnapshotTrust.STALE,
+                SessionState.resolveSnapshotTrust(runInfo(status = status, conclusion = "cancelled"))
+            )
+        }
+    }
+
+    @Test
+    fun `从未拉到 run 时快照不可用`() {
+        assertEquals(
+            "currentRun 为 null 说明一次都没有确认过会话，不能拿旧文件当真",
+            SnapshotTrust.STALE,
+            SessionState.resolveSnapshotTrust(null)
+        )
+    }
+
+    @Test
+    fun `未知状态按不可用处理`() {
+        assertEquals(
+            "将来 GitHub 若新增状态，宁可提示未运行，也不能谎报可连",
+            SnapshotTrust.STALE,
+            SessionState.resolveSnapshotTrust(runInfo(status = "some_future_status"))
+        )
+    }
+
+    @Test
+    fun `SnapshotTrust 枚举值的个数与名称不得被悄悄改动`() {
+        val names = SnapshotTrust.values().map { it.name }
+        assertEquals(
+            "MainActivity 的渲染分支依赖这三个值，改名/删除必须同步改那里",
+            listOf("PENDING", "LIVE", "STALE"),
+            names
+        )
+        assertEquals(3, names.size)
+    }
 }
