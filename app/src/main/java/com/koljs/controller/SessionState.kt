@@ -64,6 +64,23 @@ object SessionState {
     const val CANCEL_WATCH_TIMEOUT_MS = CANCEL_WATCH_INTERVAL_MS * CANCEL_WATCH_MAX_ATTEMPTS
 
     /**
+     * 判定状态文件里那份快照（piik 链接 / 网页端 RDP 链接）还能不能采信。
+     *
+     * 云桌面把这两项写进私有仓库的状态文件后**不会在关机时清空**，它只是停止更新。
+     * 所以「文件里有链接」≠「现在可连」：停止云桌面之后文件原封不动，直接照抄就会
+     * 在手机上留下「分享中 / 网页端已就绪」的假象，点进去全是打不开的死链。
+     *
+     * 只认 [STATUS_IN_PROGRESS]：过渡态（queued/requested/pending）时 runner 还没起来，
+     * 不可能已经写出本轮的 piik / guac 信息，此时文件里若有链接必然是上一轮的残留。
+     */
+    fun resolveSnapshotTrust(run: RunInfo?): SnapshotTrust = when {
+        run == null -> SnapshotTrust.STALE
+        isPending(run.status) -> SnapshotTrust.PENDING
+        isRunning(run.status) -> SnapshotTrust.LIVE
+        else -> SnapshotTrust.STALE
+    }
+
+    /**
      * 判定「取消确认巡检」的下一步动作。
      *
      * GitHub 的 `POST /actions/runs/{id}/cancel` 返回 202 只代表**已受理**，job 真正被杀
@@ -95,6 +112,20 @@ object SessionState {
         if (elapsedMs >= timeoutMs) return CancelWatchVerdict.TIMEOUT
         return CancelWatchVerdict.CONTINUE
     }
+}
+
+/**
+ * 状态文件快照的可信度，见 [SessionState.resolveSnapshotTrust]。
+ */
+enum class SnapshotTrust {
+    /** 新会话正在分配虚拟机：文件里若还有链接，那是上一轮会话的残留 */
+    PENDING,
+
+    /** 会话正在运行，状态文件里写的就是本轮真实信息 */
+    LIVE,
+
+    /** 没有活跃会话（已结束或从未启动）：文件内容一律视为历史残留 */
+    STALE
 }
 
 /**
