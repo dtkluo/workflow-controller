@@ -64,6 +64,15 @@ object SessionState {
     const val CANCEL_WATCH_TIMEOUT_MS = CANCEL_WATCH_INTERVAL_MS * CANCEL_WATCH_MAX_ATTEMPTS
 
     /**
+     * 新鲜度判断的时钟容差。
+     *
+     * 状态文件的 `updated_at` 由虚拟机时钟生成，run 的 `created_at` 由 GitHub 生成，
+     * 两者必然有秒级漂移；取 3 分钟是为了盖住「首次同步前的那一两个刷新周期」，
+     * 而不是为了容忍更大的偏差 —— 一轮刷新周期（60s）之内写出的文件都算本轮。
+     */
+    const val SNAPSHOT_SKEW_TOLERANCE_MS = 3 * 60_000L
+
+    /**
      * 判定状态文件里那份快照（piik 链接 / 网页端 RDP 链接）还能不能采信。
      *
      * 云桌面把这两项写进私有仓库的状态文件后**不会在关机时清空**，它只是停止更新。
@@ -72,12 +81,27 @@ object SessionState {
      *
      * 只认 [STATUS_IN_PROGRESS]：过渡态（queued/requested/pending）时 runner 还没起来，
      * 不可能已经写出本轮的 piik / guac 信息，此时文件里若有链接必然是上一轮的残留。
+     *
+     * 会话确实在跑（`in_progress`）时还要再验一次**新鲜度**：状态文件每 60 秒才刷新一次，
+     * 新会话刚起来的那一两分钟里，文件里躺的还是上一轮的链接 —— 若 `updated_at` 早于
+     * 本次 run 的创建时间，同样判为残留（[SnapshotTrust.RESIDUE]），而不是「分享中」。
+     *
+     * @param snapshotAtMs 状态文件的 `updated_at`（epoch 毫秒）；null = 解析不出来，
+     *                     此时不做新鲜度判断，按 [SnapshotTrust.LIVE] 处理（保持旧行为）
+     * @param skewToleranceMs 时钟容差：状态文件由虚拟机时钟生成、run 由 GitHub 生成，
+     *                     两边都存在个位数秒的漂移，容差范围内不算「早于」
      */
-    fun resolveSnapshotTrust(run: RunInfo?): SnapshotTrust = when {
+    fun resolveSnapshotTrust(
+        run: RunInfo?,
+        snapshotAtMs: Long? = null,
+        skewToleranceMs: Long = SNAPSHOT_SKEW_TOLERANCE_MS
+    ): SnapshotTrust = when {
         run == null -> SnapshotTrust.STALE
         isPending(run.status) -> SnapshotTrust.PENDING
-        isRunning(run.status) -> SnapshotTrust.LIVE
-        else -> SnapshotTrust.STALE
+        !isRunning(run.status) -> SnapshotTrust.STALE
+        snapshotAtMs != null &&
+            snapshotAtMs + skewToleranceMs < run.createdAt.time -> SnapshotTrust.RESIDUE
+        else -> SnapshotTrust.LIVE
     }
 
     /**
@@ -121,7 +145,10 @@ enum class SnapshotTrust {
     /** 新会话正在分配虚拟机：文件里若还有链接，那是上一轮会话的残留 */
     PENDING,
 
-    /** 会话正在运行，状态文件里写的就是本轮真实信息 */
+    /** 会话已在跑，但文件里那份是**本次 run 启动之前**写的，同样属上一轮残留 */
+    RESIDUE,
+
+    /** 会话正在运行，且文件是本次 run 启动之后写的 —— 本轮真实信息 */
     LIVE,
 
     /** 没有活跃会话（已结束或从未启动）：文件内容一律视为历史残留 */
