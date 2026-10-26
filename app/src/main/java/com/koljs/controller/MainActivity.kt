@@ -753,14 +753,17 @@ class MainActivity : AppCompatActivity() {
     private fun renderBillDesk(link: AgentDockLink) {
         val trust = snapshotTrust(link)
         val live = trust == SnapshotTrust.LIVE
+        val pending = trust == SnapshotTrust.PENDING
+        val residue = trust == SnapshotTrust.RESIDUE
         val ready = live && link.bdState == "ready"
         val broken = live && (link.bdState == "failed" || link.bdState == "degraded")
 
         tvPiikState.text = when {
-            !live -> "● 云桌面未在运行"
+            pending -> "● 正在分配虚拟机…"
+            residue -> "● 云桌面已启动，等待本机同步…"
             ready -> "● 已就绪（允许远控）"
             broken -> "● BilldDesk 启动异常"
-            else -> "● BilldDesk 启动中…（首次约 4 分钟）"
+            else -> "● 云桌面未在运行"
         }
         tvPiikState.setTextColor(
             ContextCompat.getColor(
@@ -768,7 +771,7 @@ class MainActivity : AppCompatActivity() {
                 when {
                     ready -> R.color.status_ok
                     broken -> R.color.status_bad
-                    live -> R.color.status_info
+                    pending || residue -> R.color.status_info
                     else -> R.color.status_muted
                 }
             )
@@ -776,13 +779,14 @@ class MainActivity : AppCompatActivity() {
 
         tvPiikUrl.text = when {
             ready -> link.bdDeviceCode ?: "—"
-            !live -> "云桌面开机后自动启动，设备码显示在这里"
+            pending -> "虚拟机分配完成后 BilldDesk 自动启动，设备码稍后出现在这里"
+            residue -> "正在拉起 BilldDesk，就绪后设备码自动出现在这里"
             broken -> "失败原因：" + (link.bdMessage ?: "未知")
-            else -> "正在拉起 BilldDesk，就绪后设备码自动出现在这里"
+            else -> "云桌面开机后自动启动，设备码显示在这里"
         }
         tvPiikPass.text = when {
             ready -> "连接密码：" + (link.bdPassword ?: "—") + "　（点击复制）"
-            live -> "连接密码：—"
+            pending || residue -> "连接密码：—"
             else -> "连接密码：—（已随会话结束）"
         }
     }
