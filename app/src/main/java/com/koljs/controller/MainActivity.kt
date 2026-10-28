@@ -772,7 +772,7 @@ class MainActivity : AppCompatActivity() {
         tvPiikState.text = when {
             pending -> "● 正在分配虚拟机…"
             residue -> "● 云桌面已启动，等待本机同步…"
-            ready -> "● 已就绪（允许远控）"
+            ready -> "● 已就绪（BilldDesk）"
             broken -> "● BilldDesk 启动异常"
             else -> "● 云桌面未在运行"
         }
@@ -789,14 +789,18 @@ class MainActivity : AppCompatActivity() {
         )
 
         tvPiikUrl.text = when {
-            ready -> link.bdDeviceCode ?: "—"
-            pending -> "虚拟机分配完成后 BilldDesk 自动启动，设备码稍后出现在这里"
-            residue -> "正在拉起 BilldDesk，就绪后设备码自动出现在这里"
+            ready -> "设备代码：" + (link.bdDeviceCode ?: "—")
+            pending -> "虚拟机分配完成后 BilldDesk 自动启动，设备代码稍后出现在这里"
+            residue -> "正在拉起 BilldDesk，就绪后设备代码自动出现在这里"
             broken -> "失败原因：" + (link.bdMessage ?: "未知")
-            else -> "云桌面开机后自动启动，设备码显示在这里"
+            else -> "云桌面开机后自动启动，设备代码显示在这里"
         }
         tvPiikPass.text = when {
-            ready -> "连接密码：" + (link.bdPassword ?: "—") + "　（点击复制）"
+            ready -> {
+                val pw = link.bdPassword?.takeIf { it.isNotBlank() }
+                if (pw != null) "连接密码：$pw　（点击复制）"
+                else "连接密码：未获取到，请刷新卡片或重启云桌面"
+            }
             pending || residue -> "连接密码：—"
             else -> "连接密码：—（已随会话结束）"
         }
