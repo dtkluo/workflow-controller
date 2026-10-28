@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
         tvPiikUrl.setOnClickListener {
             val link = agentDockLink
             // BilldDesk 卡片这一行放的是「设备码」，不是链接
-            if (link != null && link.bdState != null) {
+            if (bdActive(link)) {
                 val code = link.bdDeviceCode
                 when {
                     code.isNullOrBlank() ->
@@ -194,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         }
         tvPiikPass.setOnClickListener {
             val link = agentDockLink
-            val isBd = link?.bdState != null
+            val isBd = bdActive(link)
             val p = if (isBd) link?.bdPassword else link?.piikPassword
             if (p.isNullOrBlank()) Toast.makeText(this, "暂无可复制的密码", Toast.LENGTH_SHORT).show()
             else copyToClipboard(if (isBd) "BilldDesk 连接密码" else "房间密码", p)
@@ -641,6 +641,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * billddesk 节点是否有实质数据。
+     * controller 每次开机都会先写 state=off 的空壳节点（哪怕本轮根本不部署 BilldDesk），
+     * 旧判定 `bdState != null` 会让 Piik 永远走不到渲染分支 —— 回退 Piik 后卡片一直显示
+     * BilldDesk 就是这个原因。只有 state 非 off（ready/failed/degraded 等）才算有效。
+     */
+    private fun bdActive(link: AgentDockLink?): Boolean =
+        link != null && !link.bdState.isNullOrBlank() && link.bdState != "off"
+
+    /**
      * Piik 浏览器远控：链接每次开机都变（临时公网域名），所以直接取状态文件里的值。
      * 分享中显示绿色，未就绪显示中性提示；两项都能点击复制。
      *
@@ -649,8 +658,8 @@ class MainActivity : AppCompatActivity() {
      * 的假象。
      */
     private fun renderPiik(link: AgentDockLink?) {
-        // BilldDesk 已取代 Piik：状态文件里带 billddesk 节点时走新的渲染分支
-        if (link != null && link.bdState != null) {
+        // 快照里 billddesk 节点有实质数据时才走 BilldDesk 渲染分支
+        if (bdActive(link)) {
             renderBillDesk(link)
             return
         }
