@@ -663,6 +663,7 @@ class MainActivity : AppCompatActivity() {
             renderBillDesk(link)
             return
         }
+        tvLinkTitle.text = "远程控制（Piik）"
         val url = link?.piikUrl
         val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
@@ -760,6 +761,7 @@ class MainActivity : AppCompatActivity() {
      * 且 `piik` 节点已被标成 `retired`，绝不能再用它判断。
      */
     private fun renderBillDesk(link: AgentDockLink) {
+        tvLinkTitle.text = "远程控制（BilldDesk）"
         val trust = snapshotTrust(link)
         val live = trust == SnapshotTrust.LIVE
         val pending = trust == SnapshotTrust.PENDING
