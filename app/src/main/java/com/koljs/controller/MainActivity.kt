@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
         tvPiikUrl.setOnClickListener {
             val link = agentDockLink
             // BilldDesk 卡片这一行放的是「设备码」，不是链接
-            if (bdActive(link)) {
+            if (link != null && bdActive(link)) {
                 val code = link.bdDeviceCode
                 when {
                     code.isNullOrBlank() ->
@@ -659,7 +659,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun renderPiik(link: AgentDockLink?) {
         // 快照里 billddesk 节点有实质数据时才走 BilldDesk 渲染分支
-        if (bdActive(link)) {
+        if (link != null && bdActive(link)) {
             renderBillDesk(link)
             return
         }
