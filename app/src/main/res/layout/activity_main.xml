@@ -226,7 +226,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="远程控制（BilldDesk）"
+                    android:text="远程控制"
                     android:textSize="14sp"
                     android:textStyle="bold" />
 
