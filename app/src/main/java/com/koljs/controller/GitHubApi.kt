@@ -44,6 +44,8 @@ class ApiException(
  */
 data class AgentDockLink(
     val updatedAt: String?,
+    /** 写入这份快照的 run id（session.run_id）。与当前 run 对比可精确识别「上一轮残留」 */
+    val sessionRunId: Long?,
     val publicMcpUrl: String?,
     val localMcpUrl: String?,
     val bearerToken: String?,
@@ -340,6 +342,7 @@ class GitHubApi(
                 }
 
                 val root = JSONObject(decoded)
+                val session = root.optJSONObject("session")
                 val agentDock = root.optJSONObject("agentdock")
                 val desktop = root.optJSONObject("cloud_desktop")
                 val piik = root.optJSONObject("piik")
@@ -348,6 +351,7 @@ class GitHubApi(
 
                 AgentDockLink(
                     updatedAt = root.optText("updated_at"),
+                    sessionRunId = session?.optText("run_id")?.toLongOrNull(),
                     publicMcpUrl = agentDock?.optText("public_mcp_url"),
                     localMcpUrl = agentDock?.optText("local_mcp_url"),
                     bearerToken = agentDock?.optText("bearer_token"),

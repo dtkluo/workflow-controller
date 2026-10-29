@@ -1000,23 +1000,33 @@ class MainActivity : AppCompatActivity() {
      * 是 `health = pending-logon`。不把它显式展示出来，用户只会看到「核心未运行」，
      * 既不知道原因也不知道该做什么。
      */
-    private enum class LinkState { QUEUED, PENDING_LOGON, READY, FAILED, STALE, UNKNOWN }
+    private enum class LinkState { QUEUED, SYNCING, PENDING_LOGON, READY, FAILED, STALE, UNKNOWN }
 
     /**
      * 归一状态。
      *
      * **必须先确认当前会话真的在跑**：状态文件是上次写入时的快照，云桌面关机后它不会
      * 自动清空，直接采信会出现「手机显示已就绪、机器其实早就关了」这种最误导人的情形。
+     *
+     * 同理，会话刚启动的一两分钟里文件里躺的还是**上一轮**的快照（health=healthy、
+     * bearer/oauth 都是旧值）——只看 health 就会报「已就绪」但凭证连不上。
+     * 双保险识别残留：① 快照 `session.run_id` 与当前 run 不一致（精确，秒级）；
+     * ② `updated_at` 早于本次 run 创建时间（时间容差兜底，覆盖 run_id 缺失的旧文件）。
      */
     private fun resolveLinkState(link: AgentDockLink): LinkState {
         val run = currentRun ?: return LinkState.STALE
         return when {
             run.status in SessionState.PENDING_STATUSES -> LinkState.QUEUED
-            run.status == SessionState.STATUS_IN_PROGRESS -> when {
-                link.health == "healthy" -> LinkState.READY
-                link.health == "pending-logon" -> LinkState.PENDING_LOGON
-                !link.installed -> LinkState.FAILED
-                else -> LinkState.UNKNOWN
+            run.status == SessionState.STATUS_IN_PROGRESS -> {
+                val fromPrevRun = (link.sessionRunId != null && link.sessionRunId != run.id) ||
+                    snapshotTrust(link) == SnapshotTrust.RESIDUE
+                when {
+                    fromPrevRun -> LinkState.SYNCING
+                    link.health == "healthy" -> LinkState.READY
+                    link.health == "pending-logon" -> LinkState.PENDING_LOGON
+                    !link.installed -> LinkState.FAILED
+                    else -> LinkState.UNKNOWN
+                }
             }
             else -> LinkState.STALE
         }
@@ -1025,6 +1035,7 @@ class MainActivity : AppCompatActivity() {
     /** 首行大字：现在到底能不能连，或者下一步该做什么 */
     private fun stateHeadline(state: LinkState, link: AgentDockLink): String = when (state) {
         LinkState.READY -> "● 已就绪，可以直接连接 AI 助手"
+        LinkState.SYNCING -> "● 云桌面已启动，等待本轮凭证同步…"
         LinkState.PENDING_LOGON -> "● 待登录：请 RDP 连接 ${link.rdpUser ?: "rdpadmin"} 一次"
         LinkState.QUEUED -> "● 正在分配虚拟机…"
         LinkState.FAILED -> "● 安装异常，AgentDock 未启动"
@@ -1042,6 +1053,9 @@ class MainActivity : AppCompatActivity() {
                 "此后可立即断开，会话会保留。"
         LinkState.QUEUED ->
             "虚拟机尚未分配（约 3-5 分钟）。分配后还需 RDP 登录一次。"
+        LinkState.SYNCING ->
+            "当前显示的 MCP 地址 / Token / OAuth 密码是上一轮会话的残留，" +
+                "本轮安装完成后（约 1 分钟）自动替换，届时再复制。"
         LinkState.FAILED ->
             "错误码 ${link.errorCode ?: "—"}：${link.message ?: "未知原因"}"
         LinkState.STALE ->
@@ -1062,7 +1076,7 @@ class MainActivity : AppCompatActivity() {
     private fun stateColor(state: LinkState): Int = when (state) {
         LinkState.READY -> R.color.status_ok
         LinkState.PENDING_LOGON -> R.color.status_action
-        LinkState.QUEUED -> R.color.status_info
+        LinkState.QUEUED, LinkState.SYNCING -> R.color.status_info
         LinkState.FAILED -> R.color.status_bad
         LinkState.STALE, LinkState.UNKNOWN -> R.color.status_muted
     }
