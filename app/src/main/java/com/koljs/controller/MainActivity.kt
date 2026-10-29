@@ -792,10 +792,15 @@ class MainActivity : AppCompatActivity() {
         val residue = trust == SnapshotTrust.RESIDUE
         val ready = live && link.bdState == "ready"
         val broken = live && (link.bdState == "failed" || link.bdState == "degraded")
+        // 快照端在「billddesk-auto 目录已建、结果文件未出」期间会把 state 写成 pending
+        // （publish 脚本：目录存在 ⇒ pending，结果文件出来才变 ready）。这是启动中间态，
+        // 绝不能落进 else 的「未在运行」——那会让用户在开机后最关心的 2-3 分钟里看到假死。
+        val starting = live && link.bdState == "pending"
 
         tvPiikState.text = when {
             pending -> "● 正在分配虚拟机…"
             residue -> "● 云桌面已启动，等待本机同步…"
+            starting -> "● BilldDesk 安装启动中…（首次约 2-3 分钟）"
             ready -> "● 已就绪（BilldDesk）"
             broken -> "● BilldDesk 启动异常"
             else -> "● 云桌面未在运行"
@@ -806,7 +811,7 @@ class MainActivity : AppCompatActivity() {
                 when {
                     ready -> R.color.status_ok
                     broken -> R.color.status_bad
-                    pending || residue -> R.color.status_info
+                    pending || residue || starting -> R.color.status_info
                     else -> R.color.status_muted
                 }
             )
@@ -816,6 +821,9 @@ class MainActivity : AppCompatActivity() {
             ready -> "设备代码：" + (link.bdDeviceCode ?: "—")
             pending -> "虚拟机分配完成后 BilldDesk 自动启动，设备代码稍后出现在这里"
             residue -> "正在拉起 BilldDesk，就绪后设备代码自动出现在这里"
+            // starting 时快照的 message 就是「正在安装并读取设备码…」，直接下发
+            starting -> link.bdMessage?.takeIf { it.isNotBlank() }
+                ?: "正在安装 BilldDesk 并读取设备码，就绪后自动出现在这里"
             broken -> "失败原因：" + (link.bdMessage ?: "未知")
             else -> "云桌面开机后自动启动，设备代码显示在这里"
         }
@@ -825,7 +833,7 @@ class MainActivity : AppCompatActivity() {
                 if (pw != null) "连接密码：$pw　（点击复制）"
                 else "连接密码：未获取到，请刷新卡片或重启云桌面"
             }
-            pending || residue -> "连接密码：—"
+            pending || residue || starting -> "连接密码：—"
             else -> "连接密码：—（已随会话结束）"
         }
     }
