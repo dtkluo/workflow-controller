@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.ColorRes
@@ -64,11 +65,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPiikState: TextView
     private lateinit var tvPiikUrl: TextView
     private lateinit var tvPiikPass: TextView
+    private lateinit var tvBdWeb: TextView
     private lateinit var tvGuacState: TextView
     private lateinit var tvGuacUrl: TextView
     private lateinit var tvGuacCred: TextView
     private lateinit var tvLinkMcp: TextView
     private lateinit var tvLinkToken: TextView
+    private lateinit var tvLinkOauth: TextView
     private lateinit var btnCopyPrompt: MaterialButton
     private lateinit var btnRefreshLink: MaterialButton
 
@@ -219,6 +222,8 @@ class MainActivity : AppCompatActivity() {
         }
         tvLinkMcp = findViewById(R.id.tvLinkMcp)
         tvLinkToken = findViewById(R.id.tvLinkToken)
+        tvLinkOauth = findViewById(R.id.tvLinkOauth)
+        tvBdWeb = findViewById(R.id.tvBdWeb)
         btnCopyPrompt = findViewById(R.id.btnCopyPrompt)
         btnRefreshLink = findViewById(R.id.btnRefreshLink)
     }
@@ -252,6 +257,20 @@ class MainActivity : AppCompatActivity() {
             val token = agentDockLink?.bearerToken
             if (token.isNullOrBlank()) Toast.makeText(this, "Bearer Token 尚未就绪", Toast.LENGTH_SHORT).show()
             else copyToClipboard("Bearer Token", token)
+        }
+        tvLinkOauth.setOnClickListener {
+            val pwd = agentDockLink?.oauthPassword
+            if (pwd.isNullOrBlank()) Toast.makeText(this, "OAuth 密码尚未就绪", Toast.LENGTH_SHORT).show()
+            else copyToClipboard("OAuth 密码", pwd)
+        }
+        // BilldDesk 官方网页客户端是固定公开地址，不随会话失效，无需会话门控：
+        // 直接打开，进去后用卡片上的设备码 + 连接密码登录即可
+        tvBdWeb.setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(BD_WEB_URL)))
+            } catch (e: Exception) {
+                copyToClipboard("BilldDesk 网页版地址", BD_WEB_URL)
+            }
         }
     }
 
@@ -664,6 +683,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         tvLinkTitle.text = "远程控制（Piik）"
+        // 网页版入口是 BilldDesk 专属，Piik 分支一律隐藏
+        tvBdWeb.visibility = View.GONE
         val url = link?.piikUrl
         val trust = snapshotTrust(link)
         if (url.isNullOrBlank()) {
@@ -762,6 +783,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun renderBillDesk(link: AgentDockLink) {
         tvLinkTitle.text = "远程控制（BilldDesk）"
+        // 网页版入口随 BilldDesk 卡片出现；地址固定，各状态下都可点开
+        tvBdWeb.visibility = View.VISIBLE
+        tvBdWeb.text = "网页版：$BD_WEB_URL（点击打开）"
         val trust = snapshotTrust(link)
         val live = trust == SnapshotTrust.LIVE
         val pending = trust == SnapshotTrust.PENDING
@@ -944,6 +968,7 @@ class MainActivity : AppCompatActivity() {
             tvLinkInfo.text = "尚未同步：启动云桌面后会自动安装 AgentDock 并写入连接信息"
             tvLinkMcp.text = "MCP 地址：—"
             tvLinkToken.text = "Bearer Token：—"
+            tvLinkOauth.text = "OAuth 密码：—"
             btnCopyPrompt.isEnabled = false
             return
         }
@@ -955,6 +980,7 @@ class MainActivity : AppCompatActivity() {
         tvLinkInfo.text = stateDetail(state, link)
         tvLinkMcp.text = "MCP 地址：" + (link.publicMcpUrl ?: "未就绪")
         tvLinkToken.text = "Bearer Token：" + maskSecret(link.bearerToken)
+        tvLinkOauth.text = "OAuth 密码：" + maskSecret(link.oauthPassword)
         btnCopyPrompt.isEnabled = !link.prompt.isNullOrBlank()
     }
 
@@ -1059,6 +1085,9 @@ class MainActivity : AppCompatActivity() {
 
         /** 连接信息拉取节流。必须小于 [POLL_INTERVAL_MS]，否则会出现等待空窗。 */
         private const val LINK_FETCH_INTERVAL_MS = 25_000L
+
+        /** BilldDesk 官方网页客户端（固定公开地址，用设备码 + 连接密码登录） */
+        private const val BD_WEB_URL = "https://desk.hsslive.cn"
 
         /**
          * 交互路径（点「停止」前后定位 run）的重试次数。

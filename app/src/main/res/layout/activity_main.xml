@@ -255,6 +255,16 @@
                     android:layout_marginTop="4dp"
                     android:textSize="13sp"
                     android:text="连接密码：—" />
+
+                <!-- BilldDesk 官方网页客户端，固定地址不随会话变化；Piik 分支下隐藏 -->
+                <TextView
+                    android:id="@+id/tvBdWeb"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textSize="13sp"
+                    android:text="网页版：https://desk.hsslive.cn（点击打开）"
+                    android:visibility="gone" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
@@ -362,6 +372,15 @@
                     android:layout_height="wrap_content"
                     android:padding="6dp"
                     android:text="Bearer Token：—"
+                    android:textIsSelectable="true"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/tvLinkOauth"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:padding="6dp"
+                    android:text="OAuth 密码：—"
                     android:textIsSelectable="true"
                     android:textSize="14sp" />
 
