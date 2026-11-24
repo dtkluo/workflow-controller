@@ -79,7 +79,14 @@ data class AgentDockLink(
     val guacUrl: String?,
     val guacUsername: String?,
     val guacPassword: String?,
-    val guacMessage: String?
+    val guacMessage: String?,
+    /** webtor WSL Docker 热部署状态（按需命令 / 开机勾选两条入口共用） */
+    val webtorState: String?,
+    val webtorUrl: String?,
+    val webtorMessage: String?,
+    val webtorRequestId: String?,
+    val webtorRunId: String?,
+    val webtorUpdatedAt: String?
 )
 
 /**
@@ -234,10 +241,13 @@ class GitHubApi(
      * 不自动重试：`workflow_dispatch` 不具备幂等性，若首次请求实际已送达（仅响应丢失），
      * 重试会凭空多起一个占用额度的工作流实例。宁可让调用方提示用户确认是否已触发。
      */
-    suspend fun dispatchWorkflow(hours: Int): Unit = withContext(Dispatchers.IO) {
+    suspend fun dispatchWorkflow(hours: Int, deployWebtor: Boolean = false): Unit = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("ref", "main")
-            put("inputs", JSONObject().put("session_hours", hours.toString()))
+            put("inputs", JSONObject()
+                .put("session_hours", hours.toString())
+                // 不写死在 workflow 里：勾选才传 enabled，云端只注册一个后台任务
+                .put("deploy_webtor", if (deployWebtor) "enabled" else "disabled"))
         }.toString()
         withRetry("触发启动", maxAttempts = 1) {
             client.newCall(buildRequest("/actions/workflows/$workflowFile/dispatches", "POST", body))
@@ -310,6 +320,65 @@ class GitHubApi(
     }
 
     /**
+     * 向「已运行的云桌面」下发 webtor 部署命令。
+     *
+     * 不另造一条 RPC 通道，而是复用状态仓库做双向控制面：云端保活每分钟轮询这个文件。
+     * run_id 保证上一轮会话的残留命令不会在新实例上重放；request_id 用于去重。
+     * 写操作不重试：PUT 重试可能因响应丢失而覆盖掉更新的命令。
+     */
+    suspend fun requestWebtorDeploy(
+        stateOwner: String,
+        stateRepo: String,
+        commandPath: String,
+        runId: Long,
+        requestId: String
+    ): Unit = withContext(Dispatchers.IO) {
+        val url = "https://api.github.com/repos/$stateOwner/$stateRepo/contents/$commandPath"
+        withRetry("下发 webtor 部署命令", maxAttempts = 1) {
+            var sha: String? = null
+            client.newCall(
+                Request.Builder().url(url)
+                    .header("Authorization", "Bearer $token")
+                    .header("Accept", "application/vnd.github+json")
+                    .get().build()
+            ).execute().use { resp ->
+                val text = resp.body?.string() ?: ""
+                when (resp.code) {
+                    200 -> sha = JSONObject(text).optString("sha").takeIf { it.isNotBlank() }
+                    404 -> Unit // 首次创建
+                    else -> throw ApiException(failMessage(resp.code, text), isRetryable(resp.code))
+                }
+            }
+
+            val command = JSONObject().apply {
+                put("action", "deploy")
+                put("run_id", runId.toString())
+                put("request_id", requestId)
+                put("requested_at", java.time.Instant.now().toString())
+            }.toString()
+            val putBody = JSONObject().apply {
+                put("message", "chore(webtor): request deploy $requestId [skip ci]")
+                put("content", Base64.encodeToString(command.toByteArray(Charsets.UTF_8), Base64.DEFAULT))
+                put("branch", "main")
+                sha?.let { put("sha", it) }
+            }.toString()
+
+            client.newCall(
+                Request.Builder().url(url)
+                    .header("Authorization", "Bearer $token")
+                    .header("Accept", "application/vnd.github+json")
+                    .put(putBody.toRequestBody(jsonType))
+                    .build()
+            ).execute().use { resp ->
+                if (resp.code !in 200..201) {
+                    val text = resp.body?.string() ?: ""
+                    throw ApiException(failMessage(resp.code, text), isRetryable(resp.code))
+                }
+            }
+        }
+    }
+
+    /**
      * 读取云桌面写入私有仓库的 AgentDock 连接信息与 AI 助手提示词。
      * 状态文件尚未生成（HTTP 404）时返回 null，表示当前会话还没同步过。
      */
@@ -348,6 +417,7 @@ class GitHubApi(
                 val piik = root.optJSONObject("piik")
                 val bd = root.optJSONObject("billddesk")
                 val guac = root.optJSONObject("guac")
+                val webtor = root.optJSONObject("webtor")
 
                 AgentDockLink(
                     updatedAt = root.optText("updated_at"),
@@ -384,7 +454,13 @@ class GitHubApi(
                     guacUrl = guac?.optText("url"),
                     guacUsername = guac?.optText("username"),
                     guacPassword = guac?.optText("password"),
-                    guacMessage = guac?.optText("message")
+                    guacMessage = guac?.optText("message"),
+                    webtorState = webtor?.optText("state"),
+                    webtorUrl = webtor?.optText("url"),
+                    webtorMessage = webtor?.optText("message"),
+                    webtorRequestId = webtor?.optText("request_id"),
+                    webtorRunId = webtor?.optText("run_id"),
+                    webtorUpdatedAt = webtor?.optText("updated_at")
                 )
             }
         }
