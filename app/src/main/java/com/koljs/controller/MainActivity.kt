@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.chip.ChipGroup
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -47,6 +48,9 @@ class MainActivity : AppCompatActivity() {
     /** 正在读取云桌面连接信息的协程 */
     private var linkJob: Job? = null
 
+    /** 「部署 webtor」的互斥 Job；写命令是 PUT，重复点会互相覆盖 sha */
+    private var webtorJob: Job? = null
+
     private lateinit var tvStatus: TextView
     private lateinit var tvLastUpdate: TextView
     private lateinit var tvElapsed: TextView
@@ -74,6 +78,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLinkOauth: TextView
     private lateinit var btnCopyPrompt: MaterialButton
     private lateinit var btnRefreshLink: MaterialButton
+    private lateinit var tvWebtorState: TextView
+    private lateinit var tvWebtorInfo: TextView
+    private lateinit var cbDeployWebtorOnStart: MaterialCheckBox
+    private lateinit var btnDeployWebtor: MaterialButton
 
     /** 云桌面同步过来的 AgentDock 连接信息（含提示词） */
     private var agentDockLink: AgentDockLink? = null
@@ -226,6 +234,10 @@ class MainActivity : AppCompatActivity() {
         tvBdWeb = findViewById(R.id.tvBdWeb)
         btnCopyPrompt = findViewById(R.id.btnCopyPrompt)
         btnRefreshLink = findViewById(R.id.btnRefreshLink)
+        tvWebtorState = findViewById(R.id.tvWebtorState)
+        tvWebtorInfo = findViewById(R.id.tvWebtorInfo)
+        cbDeployWebtorOnStart = findViewById(R.id.cbDeployWebtorOnStart)
+        btnDeployWebtor = findViewById(R.id.btnDeployWebtor)
     }
 
     private fun setupClicks() {
@@ -240,6 +252,11 @@ class MainActivity : AppCompatActivity() {
             else Toast.makeText(this, "未设置密码（可在设置页填写，或查看 GitHub Secrets）", Toast.LENGTH_SHORT).show()
         }
         btnRefreshLink.setOnClickListener { refreshLink(force = true) }
+        cbDeployWebtorOnStart.isChecked = prefs.deployWebtorOnStart
+        cbDeployWebtorOnStart.setOnCheckedChangeListener { _, checked ->
+            prefs.deployWebtorOnStart = checked
+        }
+        btnDeployWebtor.setOnClickListener { requestWebtorDeploy() }
         btnCopyPrompt.setOnClickListener {
             val prompt = agentDockLink?.prompt
             if (prompt.isNullOrBlank()) {
@@ -396,9 +413,11 @@ class MainActivity : AppCompatActivity() {
         // 否则 Main.immediate 会抢在 `startActionJob =` 赋值前执行，导致互斥失效。
         startActionJob = lifecycleScope.launch {
             try {
-                api.dispatchWorkflow(hours)
+                val withWebtor = cbDeployWebtorOnStart.isChecked
+                api.dispatchWorkflow(hours, deployWebtor = withWebtor)
                 prefs.lastHours = hours
-                Toast.makeText(this@MainActivity, "已触发启动（$hours 小时），约 3-5 分钟后可连接", Toast.LENGTH_LONG).show()
+                val suffix = if (withWebtor) "，webtor 将在后台一并部署" else ""
+                Toast.makeText(this@MainActivity, "已触发启动（$hours 小时）$suffix，约 3-5 分钟后可连接", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Toast.makeText(
                     this@MainActivity,
@@ -413,6 +432,45 @@ class MainActivity : AppCompatActivity() {
                 updateUi()
                 // 即便上面因超时抛错，请求也可能实际已送达，刷新一次以确认真实状态
                 refreshOnce(force = true)
+            }
+        }
+    }
+
+    /**
+     * 运行中按需部署 webtor：把命令写进私有仓库，云端保活每分钟轮询一次。
+     *
+     * 必须绑定当前 run_id —— 否则上一轮会话残留的命令会在新实例上重放；
+     * 下发后立刻强制刷新一次连接信息，让状态行从「未部署」尽快变成「部署中」。
+     */
+    private fun requestWebtorDeploy() {
+        if (webtorJob?.isActive == true) return
+        val api = apiNow() ?: run {
+            Toast.makeText(this, "请先在设置中配置 Token", Toast.LENGTH_SHORT).show(); return
+        }
+        val run = currentRun
+        if (run == null || !SessionState.isActive(run.status)) {
+            Toast.makeText(this, "请先启动云桌面，再下发部署命令", Toast.LENGTH_LONG).show()
+            return
+        }
+        btnDeployWebtor.isEnabled = false
+        btnDeployWebtor.text = "下发中…"
+        webtorJob = lifecycleScope.launch {
+            // 首句必须是挂起调用，否则 Main.immediate 会在 webtorJob 赋值前执行，互斥失效
+            delay(1)
+            try {
+                val requestId = "app-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
+                api.requestWebtorDeploy(
+                    prefs.stateOwner, prefs.stateRepo, prefs.webtorCommandPath,
+                    run.id, requestId
+                )
+                Toast.makeText(this@MainActivity, "部署命令已下发，云端 1 分钟内响应", Toast.LENGTH_LONG).show()
+                refreshLink(force = true)
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "下发失败：${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                webtorJob = null
+                btnDeployWebtor.text = "部署 webtor（当前会话）"
+                updateLinkUi()
             }
         }
     }
@@ -956,10 +1014,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** webtor 卡片：状态来自状态文件的 webtor 段，按钮只在会话确实运行时可用。 */
+    private fun renderWebtor(link: AgentDockLink?) {
+        val run = currentRun
+        val active = run != null && SessionState.isActive(run.status)
+        btnDeployWebtor.isEnabled = active && webtorJob?.isActive != true
+
+        val state = when {
+            !active -> "未部署（云桌面未运行）"
+            link == null -> "等待状态同步…"
+            link.webtorRunId != null && link.webtorRunId != run?.id.toString() -> "未部署（上次会话残留）"
+            else -> link.webtorState ?: "未部署"
+        }
+        tvWebtorState.text = when (state) {
+            "ready" -> "● 已就绪"
+            "building" -> "● 部署中…"
+            "failed" -> "● 部署失败"
+            else -> state
+        }
+        val color = when (state) {
+            "ready" -> R.color.status_ok
+            "building" -> R.color.status_info
+            "failed" -> R.color.status_bad
+            else -> R.color.status_muted
+        }
+        tvWebtorState.setTextColor(ContextCompat.getColor(this, color))
+
+        val info = link?.webtorMessage
+        tvWebtorInfo.text = when {
+            state == "ready" -> (link?.webtorUrl ?: "") +
+                (if (info.isNullOrBlank()) "" else "\n$info") + "\n（点击文字可复制）"
+            info.isNullOrBlank() -> "部署命令经私有仓库下发，云端 1 分钟内响应"
+            else -> info
+        }
+    }
+
     private fun updateLinkUi() {
         val link = agentDockLink
         renderPiik(link)
         renderGuac(link)
+        renderWebtor(link)
         if (link == null) {
             val run = currentRun
             val pending = run != null && run.status in SessionState.PENDING_STATUSES
