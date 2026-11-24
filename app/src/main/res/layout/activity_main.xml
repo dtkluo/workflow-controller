@@ -317,6 +317,61 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- webtor（WSL Docker 热部署：开机勾选 + 运行中按需按钮） -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp"
+            android:layout_marginTop="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="webtor 媒体服务器（WSL Docker）"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvWebtorState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:text="未部署" />
+
+                <TextView
+                    android:id="@+id/tvWebtorInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textSize="13sp"
+                    android:textIsSelectable="true"
+                    android:text="部署命令经私有仓库下发，云端 1 分钟内响应" />
+
+                <com.google.android.material.checkbox.MaterialCheckBox
+                    android:id="@+id/cbDeployWebtorOnStart"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="启动云桌面时一并部署（异步，不影响连接）" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnDeployWebtor"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="部署 webtor（当前会话）" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- AI 助手连接提示词卡片 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
