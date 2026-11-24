@@ -57,4 +57,15 @@ class Prefs(context: Context) {
         get() = prefs.getString("state_path", "runtime/cloud-desktop.json")
             ?: "runtime/cloud-desktop.json"
         set(v) { prefs.edit().putString("state_path", v).apply() }
+
+    /** 云端下发的 webtor 部署命令落点（与状态文件同一个私有仓库） */
+    var webtorCommandPath: String
+        get() = prefs.getString("webtor_command_path", "runtime/commands/webtor.json")
+            ?: "runtime/commands/webtor.json"
+        set(v) { prefs.edit().putString("webtor_command_path", v).apply() }
+
+    /** 启动云桌面时是否勾选「一并部署 webtor」 */
+    var deployWebtorOnStart: Boolean
+        get() = prefs.getBoolean("deploy_webtor_on_start", false)
+        set(v) { prefs.edit().putBoolean("deploy_webtor_on_start", v).apply() }
 }
